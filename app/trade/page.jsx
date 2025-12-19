@@ -4,13 +4,13 @@ import { Container, Tabs, Tab } from 'react-bootstrap';
 import dynamic from 'next/dynamic';
 
 // Code-split tabs (faster initial load)
-const TradeForm   = dynamic(() => import('../components/TradeForm'),   { ssr: false });
-const Orders      = dynamic(() => import('../components/Orders'),      { ssr: false });
-const Positions   = dynamic(() => import('../components/Positions'),   { ssr: false });
-const Holdings    = dynamic(() => import('../components/Holdings'),    { ssr: false });
-const Summary     = dynamic(() => import('../components/Summary'),     { ssr: false });
-const Clients     = dynamic(() => import('../components/Clients'),     { ssr: false });
-const CopyTrading = dynamic(() => import('../components/CopyTrading'), { ssr: false });
+const TradeForm   = dynamic(() => import('../../components/TradeForm'), { ssr: false });
+const Orders      = dynamic(() => import('../../components/Orders'), { ssr: false });
+const Positions   = dynamic(() => import('../../components/Positions'), { ssr: false });
+const Holdings    = dynamic(() => import('../../components/Holdings'), { ssr: false });
+const Summary     = dynamic(() => import('../../components/Summary'), { ssr: false });
+const Clients     = dynamic(() => import('../../components/Clients'), { ssr: false });
+const CopyTrading = dynamic(() => import('../../components/CopyTrading'), { ssr: false });
 
 export default function Page() {
   const [key, setKey] = useState('trade');
