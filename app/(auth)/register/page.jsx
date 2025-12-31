@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-const API = process.env.NEXT_PUBLIC_API_BASE;
+NEXT_PUBLIC_API_BASE = https://multibroker-trader-multiuser-render.onrender.com
 
 export default function RegisterPage() {
   const router = useRouter();
