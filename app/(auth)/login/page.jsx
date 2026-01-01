@@ -7,49 +7,42 @@ const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ||
   "https://multibroker-trader-multiuser-render.onrender.com";
 
-export default function LoginPage() {
+export default function RegisterPage() {
   const router = useRouter();
   const [userid, setUserid] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleLogin() {
-    if (!userid || !password) {
-      alert("Enter User ID and Password");
+  async function handleRegister() {
+    if (!userid || !email || !password) {
+      alert("All fields required");
       return;
     }
 
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
+      const res = await fetch(`${API_BASE}/auth/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userid: userid,
-          password: password,
+          userid,
+          email,
+          password,
         }),
       });
 
       if (!res.ok) {
-        alert("Invalid login");
+        alert("Registration failed");
         return;
       }
 
-      const data = await res.json();
-
-      if (data.success) {
-        localStorage.setItem(
-          "mb_user",
-          JSON.stringify({ userid: data.userid })
-        );
-        router.push("/trade");
-      } else {
-        alert("Invalid login");
-      }
+      alert("User created successfully");
+      router.push("/login");
     } catch (err) {
-      console.error("Login error:", err);
-      alert("Login failed");
+      console.error(err);
+      alert("Registration error");
     } finally {
       setLoading(false);
     }
@@ -67,7 +60,7 @@ export default function LoginPage() {
     >
       <div
         style={{
-          width: 360,
+          width: 380,
           padding: 24,
           borderRadius: 8,
           background: "#fff",
@@ -75,13 +68,20 @@ export default function LoginPage() {
         }}
       >
         <h2 style={{ textAlign: "center", marginBottom: 20 }}>
-          Multibroker Trader
+          Create Account
         </h2>
 
         <input
           placeholder="User ID"
           value={userid}
           onChange={(e) => setUserid(e.target.value)}
+          style={{ width: "100%", padding: 10, marginBottom: 10 }}
+        />
+
+        <input
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
           style={{ width: "100%", padding: 10, marginBottom: 10 }}
         />
 
@@ -94,19 +94,19 @@ export default function LoginPage() {
         />
 
         <button
-          onClick={handleLogin}
+          onClick={handleRegister}
           disabled={loading}
           style={{
             width: "100%",
             padding: 10,
-            background: "#2563eb",
+            background: "#16a34a",
             color: "#fff",
             border: "none",
             borderRadius: 4,
             cursor: "pointer",
           }}
         >
-          {loading ? "Logging in..." : "Login"}
+          {loading ? "Creating..." : "Create User"}
         </button>
       </div>
     </div>
