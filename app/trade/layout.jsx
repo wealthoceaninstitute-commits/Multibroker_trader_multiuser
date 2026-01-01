@@ -2,14 +2,22 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import Navbar from "@/components/Navbar";
 
 export default function TradeLayout({ children }) {
   const router = useRouter();
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) router.push("/login");
-  }, []);
+    const user = localStorage.getItem("mb_user");
+    if (!user) {
+      router.push("/login");
+    }
+  }, [router]);
 
-  return children;
+  return (
+    <>
+      <Navbar />
+      <main>{children}</main>
+    </>
+  );
 }
