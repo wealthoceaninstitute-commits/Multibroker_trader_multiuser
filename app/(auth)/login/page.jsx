@@ -24,7 +24,28 @@ export default function LoginPage() {
 
     const data = await res.json();
     localStorage.setItem("token", data.token);
-    router.push("/trade");
+   const res = await fetch(`${API_BASE}/auth/login`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    userid,
+    password,
+  }),
+});
+
+const data = await res.json();
+
+if (data.success) {
+  localStorage.setItem(
+    "mb_user",
+    JSON.stringify({ userid: data.userid })
+  );
+
+  router.push("/trade");
+} else {
+  alert("Invalid login");
+}
+
   }
 
   return (
