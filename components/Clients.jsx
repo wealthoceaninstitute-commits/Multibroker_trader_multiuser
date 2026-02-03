@@ -15,6 +15,18 @@ import { Card, Button, Modal, Form, Table, Badge, ButtonGroup } from 'react-boot
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:5001';
 
+
+// Logged-in user id (the "owner" folder). Client Id is separate.
+const getLoggedInUserId = () => {
+  if (typeof window === 'undefined') return '';
+  return (
+    localStorage.getItem('user_id') ||
+    localStorage.getItem('userid') ||
+    localStorage.getItem('userId') ||
+    localStorage.getItem('mb_user_id') ||
+    ''
+  );
+};
 // ----- helpers -----
 const LS_KEY_GROUPS = 'mb_groups_v2_groupMultiplier';
 const readLS = (k, d) => {
@@ -32,6 +44,7 @@ const writeLS = (k, v) => {
 };
 
 export default function Clients() {
+  const user_id = getLoggedInUserId();
   const [clients, setClients] = useState([]);
   const [selectedClients, setSelectedClients] = useState(new Set());
   const [subtab, setSubtab] = useState('clients');
@@ -42,7 +55,7 @@ export default function Clients() {
   const [broker, setBroker] = useState('dhan');
   const [addForm, setAddForm] = useState({
     name: '',
-    userid: '',
+    client_id: '',
     mobile: '',
     pin: '',
     apikey: '',
@@ -51,7 +64,7 @@ export default function Clients() {
     capital: '',
   });
 
-  const [editingKey, setEditingKey] = useState({ broker: null, userid: null });
+  const [editingKey, setEditingKey] = useState({ broker: null, client_id: null });
 
   const [loggingNow, setLoggingNow] = useState(new Set());
   const pollingAbortRef = useRef(false);
@@ -79,7 +92,8 @@ export default function Clients() {
   // Load clients and groups on mount
   async function loadClients() {
     try {
-      const r = await fetch(`${API_BASE}/clients`, { cache: 'no-store' });
+      const url = user_id ? `${API_BASE}/clients?user_id=${encodeURIComponent(user_id)}` : `${API_BASE}/clients`;
+      const r = await fetch(url, { cache: 'no-store' });
       const j = await r.json();
       setClients(Array.isArray(j) ? j : j.clients || []);
     } catch {
@@ -109,7 +123,7 @@ export default function Clients() {
   }, []);
 
   // Key helper: derive a unique key from broker + userid
-  const keyOf = (c) => `${(c.broker || '').toLowerCase()}::${c.userid || c.client_id || ''}`;
+  const keyOf = (c) => `${(c.broker || '').toLowerCase()}::${c.client_id || c.userid || ''}`;
   const allClientKeys = useMemo(() => clients.map(keyOf), [clients]);
   const toggleAllClients = (ch) => setSelectedClients(ch ? new Set(allClientKeys) : new Set());
   const toggleOneClient = (k, ch) =>
@@ -147,8 +161,8 @@ export default function Clients() {
   const openAdd = () => {
     setEditMode(false);
     setBroker('dhan');
-    setAddForm({ name: '', userid: '', mobile: '', pin: '', apikey: '', api_secret: '', totpkey: '', capital: '' });
-    setEditingKey({ broker: null, userid: null });
+    setAddForm({ name: '', client_id: '', mobile: '', pin: '', apikey: '', api_secret: '', totpkey: '', capital: '' });
+    setEditingKey({ broker: null, client_id: null });
     setShowModal(true);
   };
 
@@ -163,7 +177,7 @@ export default function Clients() {
     setBroker(b);
     setAddForm({
       name: row.name || row.display_name || '',
-      userid: row.userid || row.client_id || '',
+      client_id: row.client_id || row.userid || '',
       mobile: row.mobile || '',
       pin: row.pin || '',
       apikey: row.apikey || '',
@@ -171,7 +185,7 @@ export default function Clients() {
       totpkey: row.totpkey || '',
       capital: row.capital?.toString?.() || '',
     });
-    setEditingKey({ broker: b, userid: row.userid || row.client_id || '' });
+    setEditingKey({ broker: b, client_id: row.client_id || row.userid || '' });
     setShowModal(true);
   };
 
@@ -182,7 +196,7 @@ export default function Clients() {
     const items = [...selectedClients]
       .map((k) => {
         const r = clients.find((c) => keyOf(c) === k);
-        return { broker: (r?.broker || '').toLowerCase(), userid: r?.userid || r?.client_id || '' };
+        return { broker: (r?.broker || '').toLowerCase(), client_id: r?.client_id || r?.userid || '' };
       })
       .filter(Boolean);
     try {
@@ -197,18 +211,19 @@ export default function Clients() {
   };
 
   // Poll until client logs in after adding/editing
-  async function pollUntilLoggedIn(broker, userid, { intervalMs = 1000, maxTries = 15 } = {}) {
+  async function pollUntilLoggedIn(broker, client_id, { intervalMs = 1000, maxTries = 15 } = {}) {
     const targetKey = `${broker}::${userid}`;
     setLoggingNow((prev) => new Set(prev).add(targetKey));
     pollingAbortRef.current = false;
     let tries = 0;
     while (!pollingAbortRef.current && tries < maxTries) {
       try {
-        const r = await fetch(`${API_BASE}/clients`, { cache: 'no-store' });
+        const url = user_id ? `${API_BASE}/clients?user_id=${encodeURIComponent(user_id)}` : `${API_BASE}/clients`;
+      const r = await fetch(url, { cache: 'no-store' });
         const j = await r.json();
         const list = Array.isArray(j) ? j : j.clients || [];
         const hit = list.find(
-          (c) => (c.broker || '').toLowerCase() === broker && (c.userid || c.client_id || '') === userid
+          (c) => (c.broker || '').toLowerCase() === broker && (c.client_id || c.userid || '') === userid
         );
         if (hit) {
           setClients(list);
@@ -263,15 +278,16 @@ export default function Clients() {
     const bodyBase = {
       broker,
       name: addForm.name || undefined,
-      userid: addForm.userid,
+      client_id: addForm.client_id,
+      user_id,
       capital: capitalNum,
       creds,
       ...creds,
     };
-    if (editMode && editingKey.userid) {
-      bodyBase._original = { broker: editingKey.broker, userid: editingKey.userid };
+    if (editMode && editingKey.client_id) {
+      bodyBase._original = { broker: editingKey.broker, client_id: editingKey.client_id };
       bodyBase.original_broker = editingKey.broker;
-      bodyBase.original_userid = editingKey.userid;
+      bodyBase.original_client_id = editingKey.client_id;
     }
     const endpoint = editMode ? 'edit_client' : 'add_client';
     try {
@@ -284,7 +300,7 @@ export default function Clients() {
       setSelectedClients(new Set());
       await loadClients();
       const b = (editMode ? editingKey.broker : broker) || broker;
-      const id = editMode ? editingKey.userid : addForm.userid;
+      const id = editMode ? editingKey.client_id: addForm.client_id;
       if (b && id) pollUntilLoggedIn(b, id);
       if (!r.ok) {
         console.warn(`/${endpoint} failed`, await r.text().catch(() => ''));
@@ -301,7 +317,7 @@ export default function Clients() {
       if (!groupForm.members[k]) continue;
       const [b, id] = k.split('::');
       if (!b || !id) continue;
-      a.push({ broker: b, userid: id });
+      a.push({ broker: b, client_id: id });
     }
     return a;
   };
@@ -309,7 +325,7 @@ export default function Clients() {
   const prefillGroupForm = (g) => {
     const map = {};
     (g.members || []).forEach((m) => {
-      const k = `${(m.broker || '').toLowerCase()}::${m.userid || m.client_id || ''}`;
+      const k = `${(m.broker || '').toLowerCase()}::${m.client_id || m.userid || ''}`;
       map[k] = true;
     });
     setGroupForm({
@@ -554,7 +570,7 @@ export default function Clients() {
                         onChange={(e) => toggleOneClient(k, e.target.checked)}
                       />
                     </td>
-                    <td>{c.name || c.display_name || c.userid || c.client_id}</td>
+                    <td>{c.name || c.display_name || c.client_id || c.userid}</td>
                     <td>{c.broker || ''}</td>
                     <td>{statusBadge(c)}</td>
                   </tr>
@@ -603,7 +619,7 @@ export default function Clients() {
                     <td>{g.multiplier}</td>
                     <td>
                       {(g.members || [])
-                        .map((m) => `${(m.broker || '').toUpperCase()}:${m.userid || m.client_id}`)
+                        .map((m) => `${(m.broker || '').toUpperCase()}:${m.client_id || m.userid}`)
                         .join(', ')}
                     </td>
                   </tr>
@@ -627,7 +643,7 @@ export default function Clients() {
                 disabled={editMode}
                 onChange={(e) => {
                   setBroker(e.target.value);
-                  setAddForm({ name: '', userid: '', mobile: '', pin: '', apikey: '', api_secret: '', totpkey: '', capital: '' });
+                  setAddForm({ name: '', client_id: '', mobile: '', pin: '', apikey: '', api_secret: '', totpkey: '', capital: '' });
                 }}
               >
                 <option value="dhan">Dhan</option>
@@ -647,8 +663,8 @@ export default function Clients() {
               <Form.Control
                 required
                 disabled={editMode}
-                value={addForm.userid}
-                onChange={(e) => setAddForm((p) => ({ ...p, userid: e.target.value.trim() }))}
+                value={addForm.client_id}
+                onChange={(e) => setAddForm((p) => ({ ...p, client_id: e.target.value.trim() }))}
               />
             </Form.Group>
             {/* Show Dhan fields or Motilal fields (identical layout) */}
@@ -767,7 +783,7 @@ export default function Clients() {
                     <Form.Check
                       key={k}
                       type="checkbox"
-                      label={`${(c.broker || '').toUpperCase()}:${c.userid || c.client_id}`}
+                      label={`${(c.broker || '').toUpperCase()}:${c.client_id || c.userid}`}
                       checked={groupForm.members[k] || false}
                       onChange={(e) => {
                         const checked = e.target.checked;
@@ -818,8 +834,8 @@ export default function Clients() {
                 {clients.map((c) => {
                   const k = keyOf(c);
                   return (
-                    <option key={k} value={c.userid || c.client_id}>
-                      {(c.broker || '').toUpperCase()}:{c.userid || c.client_id}
+                    <option key={k} value={c.client_id || c.userid}>
+                      {(c.broker || '').toUpperCase()}:{c.client_id || c.userid}
                     </option>
                   );
                 })}
@@ -846,7 +862,7 @@ export default function Clients() {
                         }}
                       />
                       <span style={{ flex: 1 }}>
-                        {(c.broker || '').toUpperCase()}:{c.userid || c.client_id}
+                        {(c.broker || '').toUpperCase()}:{c.client_id || c.userid}
                       </span>
                       <Form.Control
                         style={{ width: '80px' }}
