@@ -16,17 +16,6 @@ import { Card, Button, Modal, Form, Table, Badge, ButtonGroup } from 'react-boot
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:5001';
 
 
-// Logged-in user id (the "owner" folder). Client Id is separate.
-const getLoggedInUserId = () => {
-  if (typeof window === 'undefined') return '';
-  return (
-    localStorage.getItem('user_id') ||
-    localStorage.getItem('userid') ||
-    localStorage.getItem('userId') ||
-    localStorage.getItem('mb_user_id') ||
-    ''
-  );
-};
 // ----- helpers -----
 const LS_KEY_GROUPS = 'mb_groups_v2_groupMultiplier';
 const readLS = (k, d) => {
@@ -44,7 +33,6 @@ const writeLS = (k, v) => {
 };
 
 export default function Clients() {
-  const user_id = getLoggedInUserId();
   const [clients, setClients] = useState([]);
   const [selectedClients, setSelectedClients] = useState(new Set());
   const [subtab, setSubtab] = useState('clients');
@@ -92,7 +80,6 @@ export default function Clients() {
   // Load clients and groups on mount
   async function loadClients() {
     try {
-      const url = user_id ? `${API_BASE}/clients?user_id=${encodeURIComponent(user_id)}` : `${API_BASE}/clients`;
       const r = await fetch(url, { cache: 'no-store' });
       const j = await r.json();
       setClients(Array.isArray(j) ? j : j.clients || []);
@@ -218,7 +205,6 @@ export default function Clients() {
     let tries = 0;
     while (!pollingAbortRef.current && tries < maxTries) {
       try {
-        const url = user_id ? `${API_BASE}/clients?user_id=${encodeURIComponent(user_id)}` : `${API_BASE}/clients`;
       const r = await fetch(url, { cache: 'no-store' });
         const j = await r.json();
         const list = Array.isArray(j) ? j : j.clients || [];
@@ -279,7 +265,6 @@ export default function Clients() {
       broker,
       name: addForm.name || undefined,
       client_id: addForm.client_id,
-      user_id,
       capital: capitalNum,
       creds,
       ...creds,
