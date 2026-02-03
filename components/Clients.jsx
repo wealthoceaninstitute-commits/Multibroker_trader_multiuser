@@ -1,4 +1,80 @@
+function getLoggedInUserId() {
+  // We support multiple storage keys so it works with different login pages.
+  // Priority order: explicit mb_user_id, then common variants, then JSON blobs.
+  const directKeys = ['mb_user_id', 'user_id', 'userid', 'userId', 'uid', 'logged_in_user', 'loggedInUserId'];
+  for (const k of directKeys) {
+    const v = (typeof window !== 'undefined' && window.localStorage) ? localStorage.getItem(k) : '';
+    if (v && String(v).trim()) return String(v).trim();
+  }
+
+  // Sometimes login stores a JSON object (e.g., "user" or "profile").
+  const jsonKeys = ['user', 'profile', 'auth', 'session'];
+  for (const k of jsonKeys) {
+    try {
+      const raw = (typeof window !== 'undefined' && window.localStorage) ? localStorage.getItem(k) : '';
+      if (!raw) continue;
+      const obj = JSON.parse(raw);
+      const cand =
+        obj?.user_id ?? obj?.userid ?? obj?.userId ?? obj?.uid ?? obj?.id ?? obj?.username ?? obj?.mobile ?? obj?.email;
+      if (cand && String(cand).trim()) return String(cand).trim();
+    } catch {
+      // ignore
+    }
+  }
+
+  return '';
+}
+
+    if (!userId) {
+      setError('User ID is not set. Please set User ID above and try again.');
+      return;
+    }
+
+
+  // Logged-in user id (owner of these clients). We send it in headers (x-user-id).
+  const [userId, setUserId] = useState(() => getLoggedInUserId());
+  const [userIdDraft, setUserIdDraft] = useState(() => getLoggedInUserId());
+
+  function persistUserId(next) {
+    const v = String(next || '').trim();
+    setUserId(v);
+    setUserIdDraft(v);
+    try {
+      localStorage.setItem('mb_user_id', v);
+    } catch {
+      // ignore
+    }
+  }
+
 "use client";
+function getLoggedInUserId() {
+  // We support multiple storage keys so it works with different login pages.
+  // Priority order: explicit mb_user_id, then common variants, then JSON blobs.
+  const directKeys = ['mb_user_id', 'user_id', 'userid', 'userId', 'uid', 'logged_in_user', 'loggedInUserId'];
+  for (const k of directKeys) {
+    const v = (typeof window !== 'undefined' && window.localStorage) ? localStorage.getItem(k) : '';
+    if (v && String(v).trim()) return String(v).trim();
+  }
+
+  // Sometimes login stores a JSON object (e.g., "user" or "profile").
+  const jsonKeys = ['user', 'profile', 'auth', 'session'];
+  for (const k of jsonKeys) {
+    try {
+      const raw = (typeof window !== 'undefined' && window.localStorage) ? localStorage.getItem(k) : '';
+      if (!raw) continue;
+      const obj = JSON.parse(raw);
+      const cand =
+        obj?.user_id ?? obj?.userid ?? obj?.userId ?? obj?.uid ?? obj?.id ?? obj?.username ?? obj?.mobile ?? obj?.email;
+      if (cand && String(cand).trim()) return String(cand).trim();
+    } catch {
+      // ignore
+    }
+  }
+
+  return '';
+}
+
+
 
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { Card, Button, Modal, Form, Table, Badge, ButtonGroup } from 'react-bootstrap';
@@ -20,20 +96,11 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:5001';
 // Set this once at login time (recommended):
 //   localStorage.setItem('mb_user_id', '<USERID>')
 // This component also checks a few fallback keys so it works with older builds.
-const getLoggedInUserId = () => {
-  if (typeof window === 'undefined') return '';
-  return (
-    localStorage.getItem('mb_user_id') ||
-    localStorage.getItem('woi_userid') ||
-    localStorage.getItem('user_id') ||
-    localStorage.getItem('userid') ||
-    ''
-  ).trim();
-};
 
 const withUserHeader = (headers = {}) => {
-  const uid = getLoggedInUserId();
+  const uid = userId || getLoggedInUserId();
   return uid ? { ...headers, 'x-user-id': uid } : { ...headers };
+};
 };
 
 
@@ -494,6 +561,38 @@ export default function Clients() {
   // Render component
   return (
     <Card className="p-3">
+
+      {/* Logged-in User (owner) */}
+      <div className="mb-3">
+        <Card className="p-2">
+          <div className="d-flex flex-wrap align-items-center" style={{ gap: 10 }}>
+            <div style={{ fontWeight: 600 }}>User ID</div>
+            <Form.Control
+              size="sm"
+              style={{ maxWidth: 220 }}
+              placeholder="Enter your User ID"
+              value={userIdDraft}
+              onChange={(e) => setUserIdDraft(e.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => persistUserId(userIdDraft)}
+              disabled={!String(userIdDraft || '').trim()}
+            >
+              Set
+            </Button>
+            <Badge bg={userId ? 'success' : 'warning'}>{userId ? `Active: ${userId}` : 'Not set'}</Badge>
+            {!userId && (
+              <div className="text-muted" style={{ fontSize: 12 }}>
+                Set this once. It will be saved in your browser and sent to backend as <code>x-user-id</code>.
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+
+
       {/* Toolbar */}
       <div className="d-flex mb-3" style={{ gap: 10 }}>
         {subtab === 'clients' ? (
