@@ -15,6 +15,27 @@ import { Card, Button, Modal, Form, Table, Badge, ButtonGroup } from 'react-boot
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:5001';
 
+// ---------------- logged-in user id (Option 1) ----------------
+// We pass the logged-in user's id to the backend via a request header.
+// Set this once at login time (recommended):
+//   localStorage.setItem('mb_user_id', '<USERID>')
+// This component also checks a few fallback keys so it works with older builds.
+const getLoggedInUserId = () => {
+  if (typeof window === 'undefined') return '';
+  return (
+    localStorage.getItem('mb_user_id') ||
+    localStorage.getItem('woi_userid') ||
+    localStorage.getItem('user_id') ||
+    localStorage.getItem('userid') ||
+    ''
+  ).trim();
+};
+
+const withUserHeader = (headers = {}) => {
+  const uid = getLoggedInUserId();
+  return uid ? { ...headers, 'x-user-id': uid } : { ...headers };
+};
+
 
 // ----- helpers -----
 const LS_KEY_GROUPS = 'mb_groups_v2_groupMultiplier';
@@ -80,7 +101,10 @@ export default function Clients() {
   // Load clients and groups on mount
   async function loadClients() {
     try {
-      const r = await fetch(url, { cache: 'no-store' });
+      const r = await fetch(`${API_BASE}/clients`, {
+        cache: 'no-store',
+        headers: withUserHeader(),
+      });
       const j = await r.json();
       setClients(Array.isArray(j) ? j : j.clients || []);
     } catch {
@@ -90,7 +114,10 @@ export default function Clients() {
 
   async function loadGroups() {
     try {
-      const r = await fetch(`${API_BASE}/groups`, { cache: 'no-store' });
+      const r = await fetch(`${API_BASE}/groups`, {
+        cache: 'no-store',
+        headers: withUserHeader(),
+      });
       if (r.ok) {
         const j = await r.json();
         const arr = Array.isArray(j) ? j : j.groups || [];
@@ -189,7 +216,7 @@ export default function Clients() {
     try {
       await fetch(`${API_BASE}/delete_client`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...withUserHeader() },
         body: JSON.stringify({ items }),
       });
       await loadClients();
@@ -199,17 +226,20 @@ export default function Clients() {
 
   // Poll until client logs in after adding/editing
   async function pollUntilLoggedIn(broker, client_id, { intervalMs = 1000, maxTries = 15 } = {}) {
-    const targetKey = `${broker}::${userid}`;
+    const targetKey = `${broker}::${client_id}`;
     setLoggingNow((prev) => new Set(prev).add(targetKey));
     pollingAbortRef.current = false;
     let tries = 0;
     while (!pollingAbortRef.current && tries < maxTries) {
       try {
-      const r = await fetch(url, { cache: 'no-store' });
+        const r = await fetch(`${API_BASE}/clients`, {
+          cache: 'no-store',
+          headers: withUserHeader(),
+        });
         const j = await r.json();
         const list = Array.isArray(j) ? j : j.clients || [];
         const hit = list.find(
-          (c) => (c.broker || '').toLowerCase() === broker && (c.client_id || c.userid || '') === userid
+          (c) => (c.broker || '').toLowerCase() === broker && (c.client_id || c.userid || '') === client_id
         );
         if (hit) {
           setClients(list);
@@ -278,7 +308,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...withUserHeader() },
         body: JSON.stringify(bodyBase),
       });
       setShowModal(false);
@@ -346,7 +376,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/delete_group`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...withUserHeader() },
         body: JSON.stringify({ ids, names: ids }),
       });
       ok = r.ok;
@@ -378,7 +408,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...withUserHeader() },
         body: JSON.stringify(payload),
       });
       ok = r.ok;
