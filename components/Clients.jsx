@@ -656,56 +656,40 @@ export default function Clients() {
               <Form.Control value={addForm.userid} disabled={editMode} required onChange={(e) => setAddForm(p => ({ ...p, userid: e.target.value.trim() }))} />
             </Form.Group>
 
-            <>
-              <Form.Group className="mb-2">
-                <Form.Label>Password *</Form.Label>
-                <Form.Control
-                  type="password"
-                  required
-                  value={addForm.password}
-                  onChange={(e) => setAddForm(p => ({ ...p, password: e.target.value }))}
-                />
-              </Form.Group>
+            {/* Motilal Oswal credentials */}
+            <Form.Group className="mb-2">
+              <Form.Label>Password *</Form.Label>
+              <Form.Control
+                type="password"
+                required
+                value={addForm.password}
+                onChange={(e) => setAddForm(p => ({ ...p, password: e.target.value }))}
+              />
+            </Form.Group>
 
-              <Form.Group className="mb-2">
-                <Form.Label>PAN (optional)</Form.Label>
-                <Form.Control
-                  value={addForm.pan}
-                  onChange={(e) => setAddForm(p => ({ ...p, pan: e.target.value }))}
-                />
-              </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>PAN (optional)</Form.Label>
+              <Form.Control
+                value={addForm.pan}
+                onChange={(e) => setAddForm(p => ({ ...p, pan: e.target.value }))}
+              />
+            </Form.Group>
 
-              <Form.Group className="mb-2">
-                <Form.Label>API Key (optional)</Form.Label>
-                <Form.Control
-                  value={addForm.apikey}
-                  onChange={(e) => setAddForm(p => ({ ...p, apikey: e.target.value }))}
-                />
-              </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>API Key (optional)</Form.Label>
+              <Form.Control
+                value={addForm.apikey}
+                onChange={(e) => setAddForm(p => ({ ...p, apikey: e.target.value }))}
+              />
+            </Form.Group>
 
-              <Form.Group className="mb-2">
-                <Form.Label>TOTP Key (optional)</Form.Label>
-                <Form.Control
-                  value={addForm.totpkey}
-                  onChange={(e) => setAddForm(p => ({ ...p, totpkey: e.target.value }))}
-                />
-              </Form.Group>
-            </>/>
-                </Form.Group>
-                <Form.Group className="mb-2">
-                  <Form.Label>PAN *</Form.Label>
-                  <Form.Control required value={addForm.pan} onChange={(e) => setAddForm(p => ({ ...p, pan: e.target.value }))} />
-                </Form.Group>
-                <Form.Group className="mb-2">
-                  <Form.Label>API Key *</Form.Label>
-                  <Form.Control type="password" required value={addForm.apikey} onChange={(e) => setAddForm(p => ({ ...p, apikey: e.target.value }))} />
-                </Form.Group>
-                <Form.Group className="mb-2">
-                  <Form.Label>TOTP Key (optional)</Form.Label>
-                  <Form.Control type="password" value={addForm.totpkey} onChange={(e) => setAddForm(p => ({ ...p, totpkey: e.target.value }))} />
-                </Form.Group>
-              </>
-            )}
+            <Form.Group className="mb-2">
+              <Form.Label>TOTP Key (optional)</Form.Label>
+              <Form.Control
+                value={addForm.totpkey}
+                onChange={(e) => setAddForm(p => ({ ...p, totpkey: e.target.value }))}
+              />
+            </Form.Group>
 
             <Form.Group className="mb-2">
               <Form.Label>Capital</Form.Label>
