@@ -1,9 +1,8 @@
-"use client";
+'use client';
 
-import { useEffect, useMemo, useState, useRef } from "react";
-import { Card, Button, Modal, Form, Table, Badge, ButtonGroup } from "react-bootstrap";
+import { useEffect, useMemo, useState, useRef } from 'react';
+import { Card, Button, Modal, Form, Table, Badge, ButtonGroup } from 'react-bootstrap';
 
-// ✅ DO NOT default to localhost on Vercel
 const DEFAULT_RENDER_API = "https://multibroker-trader-multiuser-render.onrender.com";
 const API_BASE =
   (process.env.NEXT_PUBLIC_API_BASE && process.env.NEXT_PUBLIC_API_BASE.trim()) ||
@@ -13,197 +12,106 @@ const API_BASE =
 const LS_KEY_GROUPS = "mb_groups_v2_groupMultiplier";
 const LS_KEY_USERID = "mb_logged_in_userid_v1";
 
-// 1) Prefer navbar "Welcome, <user>"
+// --------- robust user detection ---------
+// 1) Prefer the visible navbar text: "Welcome, <user>"
+// 2) Fallback to localStorage if navbar not available
 const detectUserFromWelcomeText = () => {
   if (typeof window === "undefined") return "";
   try {
-    const txt = document.body?.innerText || "";
-    const m = txt.match(/Welcome,\s*([^\s]+)/i);
-    if (m && m[1]) return String(m[1]).trim();
-  } catch {}
-  return "";
-};
-
-const readLSRaw = (k) => {
-  try {
-    return localStorage.getItem(k);
+    const all = Array.from(document.querySelectorAll("*"));
+    const el = all.find((n) => {
+      const t = (n?.textContent || "").trim();
+      return /^welcome\s*,/i.test(t);
+    });
+    if (!el) return "";
+    const t = (el.textContent || "").trim();
+    const m = t.match(/^welcome\s*,\s*(.+)$/i);
+    return (m?.[1] || "").trim();
   } catch {
-    return null;
+    return "";
   }
 };
 
-const writeLS = (k, v) => {
-  try {
-    localStorage.setItem(k, String(v ?? ""));
-  } catch {}
-};
-
-const safeJson = async (r) => {
-  try {
-    return await r.json();
-  } catch {
-    return null;
-  }
-};
-
-// Normalize different backend response shapes into a flat clients array
-const normalizeClients = (j) => {
-  if (!j) return [];
-  if (Array.isArray(j)) return j;
-
-  // common wrappers
-  const candidates = [j.clients, j.data, j.items, j.result, j.payload, j.rows];
-  for (const c of candidates) {
-    if (Array.isArray(c)) return c;
-  }
-
-  // broker keyed object: { motilal:[...], dhan:[...], ... }
-  const maybeMap =
-    j.clients_by_broker && typeof j.clients_by_broker === "object" ? j.clients_by_broker : j;
-
-  if (maybeMap && typeof maybeMap === "object") {
-    const out = [];
-    for (const [k, v] of Object.entries(maybeMap)) {
-      if (Array.isArray(v)) {
-        out.push(...v.map((x) => ({ broker: x?.broker || k, ...x })));
-      } else if (v && typeof v === "object") {
-        // handle map-of-clients: { broker: { id1:{...}, id2:{...} } }
-        const vals = Object.values(v).filter((x) => x && typeof x === "object");
-        if (vals.length) out.push(...vals.map((x) => ({ broker: x?.broker || k, ...x })));
-      }
-    }
-    if (out.length) return out;
-  }
-
-  return [];
-};
-
-// POST helper: try multiple endpoints until one is not 404
-async function postWithFallback(paths, body, headers) {
-  let last = null;
-
-  for (const p of paths) {
-    try {
-      const r = await fetch(`${API_BASE}${p}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-      });
-
-      const text = await r.text().catch(() => "");
-
-      // If route not found, try next
-      if (r.status === 404) {
-        last = { path: p, status: r.status, ok: r.ok, text };
-        continue;
-      }
-
-      return { path: p, status: r.status, ok: r.ok, text };
-    } catch (e) {
-      last = { path: p, status: -1, ok: false, text: String(e?.message || e) };
-    }
-  }
-
-  return last || { path: paths?.[0] || "", status: -1, ok: false, text: "No endpoint matched" };
-}
+const readLS = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } };
+const writeLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
 export default function Clients() {
-  const [clients, setClients] = useState([]);
-  const [selectedClients, setSelectedClients] = useState(new Set());
-  const [subtab, setSubtab] = useState("clients");
-
-  const [showModal, setShowModal] = useState(false);
-  const [editMode, setEditMode] = useState(false);
-
-  const [broker, setBroker] = useState("dhan");
-  const [addForm, setAddForm] = useState({
-    name: "",
-    userid: "",
-    mobile: "",
-    pin: "",
-    apikey: "",
-    api_secret: "",
-    totpkey: "",
-    capital: "",
-  });
-
-  const [editingKey, setEditingKey] = useState({ broker: null, userid: null });
-  const [loggingNow, setLoggingNow] = useState(new Set());
-  const pollingAbortRef = useRef(false);
-
-  // Groups
-  const [groups, setGroups] = useState([]);
-  const [selectedGroups, setSelectedGroups] = useState(new Set());
-
-  // UI unchanged: input exists but auto-fills
+  // ===== Logged-in user (multi-user backend) =====
   const [userId, setUserId] = useState("");
-  const userTouchedRef = useRef(false);
-
-  const setUserIdFromSession = (next) => {
-    const v = String(next || "").trim();
-    if (!v) return;
-    setUserId(v);
-    writeLS(LS_KEY_USERID, v);
-  };
-
-  const saveUserId = (v) => {
-    userTouchedRef.current = true;
-    const next = String(v || "");
-    setUserId(next);
-    writeLS(LS_KEY_USERID, next);
-  };
 
   const getUid = () => {
-    const w = detectUserFromWelcomeText();
-    if (w) {
-      if (!userTouchedRef.current && w !== userId) setUserIdFromSession(w);
-      return w;
+    const fromWelcome = detectUserFromWelcomeText();
+    if (fromWelcome) {
+      try { localStorage.setItem(LS_KEY_USERID, JSON.stringify(fromWelcome)); } catch {}
+      return fromWelcome;
     }
-    return (userId || "").trim();
+    try {
+      const v = JSON.parse(localStorage.getItem(LS_KEY_USERID) || '""');
+      return (v || "").trim();
+    } catch {
+      return "";
+    }
   };
 
-  // ---- On mount: take real login user from "Welcome, ..." or fallback LS ----
+  // Keep userId updated (welcome text loads after hydration sometimes)
   useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const welcome = detectUserFromWelcomeText();
-    if (welcome) {
-      setUserIdFromSession(welcome);
-    } else {
-      const ls = (readLSRaw(LS_KEY_USERID) || "").trim();
-      if (ls) setUserId(ls);
-    }
-
-    // Keep watching for login change (user switch)
-    const applyWelcome = () => {
-      const w = detectUserFromWelcomeText();
-      if (!w) return;
-      if (!userTouchedRef.current && w !== userId) setUserIdFromSession(w);
+    const tick = () => {
+      const uid = getUid();
+      setUserId((prev) => (uid && uid !== prev ? uid : prev));
     };
-
-    const obs = new MutationObserver(() => applyWelcome());
-    try {
-      obs.observe(document.body, { childList: true, subtree: true, characterData: true });
-    } catch {}
-
-    // small delayed retries (hydration timing)
-    let tries = 0;
-    const t = setInterval(() => {
-      tries += 1;
-      applyWelcome();
-      if (tries >= 12) clearInterval(t);
-    }, 500);
-
-    return () => {
-      obs.disconnect();
-      clearInterval(t);
-    };
+    tick();
+    const t = setInterval(tick, 1200);
+    return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---------- robust clients fetch ----------
-  async function fetchClientsFor(uid) {
-    const headers = uid ? { "x-user-id": uid } : undefined;
+  // ===== Clients state =====
+  const [clients, setClients] = useState([]);
+  const [selectedClients, setSelectedClients] = useState(new Set());
+  const [subtab, setSubtab] = useState('clients');
+
+  const [showModal, setShowModal] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const broker = 'motilal';
+  const [addForm, setAddForm] = useState({
+    name: '', userid: '', password: '', pan: '',
+    apikey: '', totpkey: '', capital: '',
+  });
+  const [editingKey, setEditingKey] = useState({ broker: null, userid: null });
+
+  // Tracks clients currently logging in (for instant UI feedback)
+  const [loggingNow, setLoggingNow] = useState(new Set());
+  const pollingAbortRef = useRef(false);
+
+  // ===== Groups =====
+  const [groups, setGroups] = useState([]); // [{id, name, multiplier, members:[{broker,userid}]}]
+  const [selectedGroups, setSelectedGroups] = useState(new Set());
+
+  const [showGroupModal, setShowGroupModal] = useState(false);
+  const [editGroupMode, setEditGroupMode] = useState(false);
+  const [groupForm, setGroupForm] = useState({
+    id: null,
+    name: '',
+    multiplier: '1',
+    members: {}, // clientKey -> true
+  });
+
+  // ===== Copy Trading (table UI like Group) =====
+  const [showCopyModal, setShowCopyModal] = useState(false);
+  const [copyForm, setCopyForm] = useState({
+    name: '',
+    master: '',                // userid
+    rows: {},                  // clientKey -> {selected: bool, mult: '1'}
+  });
+
+  // ===== Loaders =====
+  async function loadClients() {
+    const uid = getUid();
+    if (!uid) {
+      setClients([]);
+      return;
+    }
+    const headers = { "x-user-id": uid };
 
     const urls = [
       `${API_BASE}/get_clients`,
@@ -220,26 +128,21 @@ export default function Clients() {
       try {
         const r = await fetch(url, { cache: "no-store", headers });
         if (!r.ok) continue;
-        const j = await safeJson(r);
-        const arr = normalizeClients(j);
-        if (Array.isArray(arr) && arr.length > 0) return arr;
-        if (Array.isArray(arr)) lastArr = arr;
+        const j = await r.json();
+        const arr = Array.isArray(j) ? j : (j.clients || j.data || []);
+        const norm = Array.isArray(arr)
+          ? arr.map((c) => ({ ...c, broker: (c?.broker || "motilal").toLowerCase() }))
+          : [];
+        if (norm.length > 0) {
+          setClients(norm);
+          return;
+        }
+        lastArr = norm;
       } catch {}
     }
 
-    return lastArr ?? [];
+    setClients(lastArr ?? []);
   }
-
-  async function loadClients() {
-    const uid = getUid();
-    if (!uid) {
-      setClients([]);
-      return;
-    }
-    const list = await fetchClientsFor(uid);
-    setClients(list);
-  }
-
   async function loadGroups() {
     const uid = getUid();
     try {
@@ -248,12 +151,10 @@ export default function Clients() {
         headers: uid ? { "x-user-id": uid } : undefined,
       });
       if (r.ok) {
-        const j = await safeJson(r);
-        const arr = Array.isArray(j) ? j : j?.groups || [];
+        const j = await r.json();
+        const arr = Array.isArray(j) ? j : (j.groups || []);
         setGroups(arr);
-        try {
-          localStorage.setItem(LS_KEY_GROUPS, JSON.stringify(arr));
-        } catch {}
+        try { localStorage.setItem(LS_KEY_GROUPS, JSON.stringify(arr)); } catch {}
         return;
       }
       throw new Error("not ready");
@@ -266,229 +167,149 @@ export default function Clients() {
       }
     }
   }
+  useEffect(() => { loadGroups(); }, []);
+  useEffect(() => { loadClients(); }, [userId]);
 
-  useEffect(() => {
-    loadGroups();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    loadClients();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
-
-  // Key helper
-  const keyOf = (c) => `${(c.broker || "").toLowerCase()}::${c.userid || c.client_id || ""}`;
+  // ===== Keys & selections =====
+  const keyOf = (c) => `${(c.broker || '').toLowerCase()}::${c.userid || c.client_id || ''}`;
   const allClientKeys = useMemo(() => clients.map(keyOf), [clients]);
-  const toggleAllClients = (ch) => setSelectedClients(ch ? new Set(allClientKeys) : new Set());
-  const toggleOneClient = (k, ch) =>
-    setSelectedClients((prev) => {
-      const s = new Set(prev);
-      ch ? s.add(k) : s.delete(k);
-      return s;
-    });
+
+  const toggleAllClients = (checked) => setSelectedClients(checked ? new Set(allClientKeys) : new Set());
+  const toggleOneClient = (k, checked) =>
+    setSelectedClients(prev => { const s = new Set(prev); checked ? s.add(k) : s.delete(k); return s; });
 
   const groupKey = (g) => g.id || g.name;
   const allGroupKeys = useMemo(() => groups.map(groupKey), [groups]);
-  const toggleAllGroups = (ch) => setSelectedGroups(ch ? new Set(allGroupKeys) : new Set());
-  const toggleOneGroup = (k, ch) =>
-    setSelectedGroups((prev) => {
-      const s = new Set(prev);
-      ch ? s.add(k) : s.delete(k);
-      return s;
-    });
+  const toggleAllGroups = (checked) => setSelectedGroups(checked ? new Set(allGroupKeys) : new Set());
+  const toggleOneGroup = (k, checked) =>
+    setSelectedGroups(prev => { const s = new Set(prev); checked ? s.add(k) : s.delete(k); return s; });
 
+  // ===== UI bits =====
   const statusBadge = (c) => {
     const k = keyOf(c);
-    if (loggingNow.has(k)) return <Badge bg="warning">logging…</Badge>;
-    const s =
-      c.session_active === true
-        ? "logged_in"
-        : c.session_active === false
-        ? "logged_out"
-        : c.status || "pending";
-    const v =
-      s === "logged_in"
-        ? "success"
-        : s === "logged_out"
-        ? "secondary"
-        : s === "failed"
-        ? "danger"
-        : "warning";
-    return <Badge bg={v}>{s}</Badge>;
+    if (loggingNow.has(k)) return <Badge bg="warning">logging_in…</Badge>;
+    const s = c.session_active === true ? 'logged_in'
+      : c.session_active === false ? 'logged_out'
+      : (c.status || 'pending');
+    const variant = s === 'logged_in' ? 'success'
+      : s === 'logged_out' ? 'secondary'
+      : s === 'failed' ? 'danger' : 'warning';
+    return <Badge bg={variant}>{s}</Badge>;
   };
 
+  // ===== Client CRUD =====
   const openAdd = () => {
     setEditMode(false);
-    setBroker("dhan");
-    setAddForm({
-      name: "",
-      userid: "",
-      mobile: "",
-      pin: "",
-      apikey: "",
-      api_secret: "",
-      totpkey: "",
-      capital: "",
-    });
-    setEditingKey({ broker: null, userid: null });
+    setAddForm({ name:'', userid:'', password:'', pan:'', apikey:'', totpkey:'', capital:'' });
+    setEditingKey({ broker:null, userid:null });
     setShowModal(true);
   };
 
   const openEdit = () => {
     if (selectedClients.size !== 1) return;
-    const k = [...selectedClients][0];
-    const row = clients.find((c) => keyOf(c) === k);
+    const k = Array.from(selectedClients)[0];
+    const row = clients.find(c => keyOf(c) === k);
     if (!row) return;
 
     setEditMode(true);
-    const b = (row.broker || "").toLowerCase();
-    setBroker(b);
-
+    const b = (row.broker || '').toLowerCase();
     setAddForm({
-      name: row.name || row.display_name || "",
-      userid: row.userid || row.client_id || "",
-      mobile: row.mobile || "",
-      pin: row.pin || "",
-      apikey: row.apikey || "",
-      api_secret: row.api_secret || row.pan || "",
-      totpkey: row.totpkey || "",
-      capital: row.capital?.toString?.() || "",
+      name: row.name || row.display_name || '',
+      userid: row.userid || row.client_id || '',
+      password: row.password || '',
+      pan: row.pan || '',
+      apikey: row.apikey || '',
+      totpkey: row.totpkey || '',
+      capital: row.capital?.toString?.() || '',
     });
-
-    setEditingKey({ broker: b, userid: row.userid || row.client_id || "" });
+    setEditingKey({ broker: b, userid: row.userid || row.client_id || '' });
     setShowModal(true);
   };
 
-  // ✅ DELETE with fallback endpoints + good error reporting
   const onDelete = async () => {
     if (!selectedClients.size) return;
-    if (!confirm(`Delete ${selectedClients.size} client(s)?`)) return;
+    if (!confirm(`Delete ${selectedClients.size} selected client(s)?`)) return;
 
-    const uid = getUid();
-    if (!uid) {
-      alert("Login user not detected. Please re-login and try again.");
-      return;
-    }
+    const items = Array.from(selectedClients).map(k => {
+      const row = clients.find(c => keyOf(c) === k);
+      return { broker: (row?.broker || '').toLowerCase(), userid: row?.userid || row?.client_id || '' };
+    }).filter(Boolean);
 
-    const items = [...selectedClients]
-      .map((k) => {
-        const r = clients.find((c) => keyOf(c) === k);
-        return { broker: (r?.broker || "").toLowerCase(), userid: r?.userid || r?.client_id || "" };
-      })
-      .filter((x) => x && x.broker && x.userid);
-
-    const payload = { user_id: uid, items };
-    const headers = { "Content-Type": "application/json", "x-user-id": uid };
-
-    // Try likely backend route names (one of these usually exists)
-    const candidates = [
-      "/delete_client",
-      "/delete_clients",
-      "/clients/delete",
-      "/remove_client",
-      "/client/delete",
-    ];
-
-    const res = await postWithFallback(candidates, payload, headers);
-
-    if (!res || res.status === 404) {
-      alert(
-        "Backend has no delete route (404).\n\nTried:\n" +
-          candidates.join("\n") +
-          "\n\nFix backend by adding POST /delete_client or update frontend to correct route."
-      );
-      return;
-    }
-
-    if (!res.ok) {
-      alert(`Delete failed (${res.status}) via ${res.path}\n${res.text || ""}`);
-      return;
-    }
-
+    try {
+      await fetch(`${API_BASE}/delete_client`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(getUid() ? { 'x-user-id': getUid() } : {}) },
+        body: JSON.stringify({ items })
+      });
+      await loadClients();
+    } catch {}
     setSelectedClients(new Set());
-    await loadClients();
   };
 
+  // Poll /clients until given userid is logged in
   async function pollUntilLoggedIn(broker, userid, { intervalMs = 1000, maxTries = 15 } = {}) {
-    const uid = getUid();
     const targetKey = `${broker}::${userid}`;
-    setLoggingNow((prev) => new Set(prev).add(targetKey));
+    setLoggingNow(prev => new Set(prev).add(targetKey));
     pollingAbortRef.current = false;
 
     let tries = 0;
     while (!pollingAbortRef.current && tries < maxTries) {
       try {
-        const list = await fetchClientsFor(uid);
-        const hit = list.find(
-          (c) => (c.broker || "").toLowerCase() === broker && (c.userid || c.client_id || "") === userid
+        const r = await fetch(`${API_BASE}/clients`, { cache: 'no-store' });
+        const j = await r.json();
+        const list = Array.isArray(j) ? j : (j.clients || []);
+        const hit = list.find(c =>
+          (c.broker || '').toLowerCase() === broker &&
+          (c.userid || c.client_id || '') === userid
         );
         if (hit) {
           setClients(list);
           if (hit.session_active === true) break;
         }
       } catch {}
-      tries++;
-      await new Promise((res) => setTimeout(res, intervalMs));
+      tries += 1;
+      await new Promise(res => setTimeout(res, intervalMs));
     }
 
-    setLoggingNow((prev) => {
-      const n = new Set(prev);
-      n.delete(targetKey);
-      return n;
-    });
+    setLoggingNow(prev => { const n = new Set(prev); n.delete(targetKey); return n; });
   }
 
   const onSubmit = async (e) => {
     e.preventDefault();
 
-    const uid = getUid();
-    if (!uid) {
-      alert("Login user not detected. Please re-login and try again.");
-      return;
-    }
+    const capitalNum = addForm.capital === '' ? undefined : Number(addForm.capital) || 0;
 
-    if (broker === "dhan") {
-      if (!addForm.mobile || !addForm.pin || !addForm.apikey || !addForm.api_secret || !addForm.totpkey) {
-        alert("All Dhan fields are required.");
-        return;
-      }
-    }
-    if (broker === "motilal") {
-      if (!addForm.apikey || !addForm.pin || !addForm.api_secret) {
-        alert("API Key, Password and PAN are required for Motilal.");
-        return;
-      }
-    }
-
-    const capitalNum = addForm.capital === "" ? undefined : Number(addForm.capital) || 0;
-
-    const creds =
-      broker === "dhan"
-        ? { mobile: addForm.mobile, pin: addForm.pin, apikey: addForm.apikey, api_secret: addForm.api_secret, totpkey: addForm.totpkey }
-        : { apikey: addForm.apikey, password: addForm.pin, pan: addForm.api_secret, totpkey: addForm.totpkey };
+    const creds = {
+      password: addForm.password || undefined,
+      pan: addForm.pan || undefined,
+      apikey: addForm.apikey || undefined,
+      totpkey: addForm.totpkey || undefined,
+    };
 
     const bodyBase = {
       broker,
       name: addForm.name || undefined,
-      client_id: addForm.userid,
-      user_id: uid,
+      userid: addForm.userid,
       capital: capitalNum,
       creds,
-      ...creds,
     };
+    bodyBase.password = addForm.password || undefined;
+      bodyBase.pan = addForm.pan || undefined;
+      bodyBase.apikey = addForm.apikey || undefined;
+      bodyBase.totpkey = addForm.totpkey || undefined;
 
     if (editMode && editingKey.userid) {
+      bodyBase._original = { broker: editingKey.broker, userid: editingKey.userid };
       bodyBase.original_broker = editingKey.broker;
       bodyBase.original_userid = editingKey.userid;
     }
 
-    const endpoint = editMode ? "edit_client" : "add_client";
+    const endpoint = editMode ? 'edit_client' : 'add_client';
 
     try {
       const r = await fetch(`${API_BASE}/${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-id": uid },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(getUid() ? { 'x-user-id': getUid() } : {}) },
         body: JSON.stringify(bodyBase),
       });
 
@@ -497,84 +318,265 @@ export default function Clients() {
       await loadClients();
 
       const b = (editMode ? editingKey.broker : broker) || broker;
-      const id = editMode ? editingKey.userid : addForm.userid;
-      if (b && id) pollUntilLoggedIn(b, id);
+      const id = (editMode ? editingKey.userid : addForm.userid);
+      if (b && id) pollUntilLoggedIn(b, id, { intervalMs: 1000, maxTries: 15 });
 
-      if (!r.ok) console.warn(`/${endpoint} failed`, await r.text().catch(() => ""));
+      if (!r.ok) {
+        try { console.warn(`/${endpoint} failed`, await r.text()); } catch {}
+      }
     } catch {
       setShowModal(false);
     }
   };
 
-  // ---------------- UI (UNCHANGED) ----------------
+  // ===== Group helpers =====
+  const membersArrayFromForm = () => {
+    const arr = [];
+    for (const k of Object.keys(groupForm.members || {})) {
+      if (!groupForm.members[k]) continue;
+      const [b, id] = k.split('::');
+      if (!b || !id) continue;
+      arr.push({ broker: b, userid: id });
+    }
+    return arr;
+  };
+
+  const prefillGroupForm = (g) => {
+    const map = {};
+    (g.members || []).forEach(m => {
+      const k = `${(m.broker||'').toLowerCase()}::${m.userid||m.client_id||''}`;
+      map[k] = true;
+    });
+    setGroupForm({
+      id: g.id ?? null,
+      name: g.name || '',
+      multiplier: (g.multiplier?.toString?.() || '1'),
+      members: map
+    });
+  };
+
+  // ===== Group CRUD =====
+  const openCreateGroup = () => {
+    setEditGroupMode(false);
+    setGroupForm({ id: null, name: '', multiplier: '1', members: {} });
+    setShowGroupModal(true);
+  };
+
+  const openEditGroup = () => {
+    if (selectedGroups.size !== 1) return;
+    const k = Array.from(selectedGroups)[0];
+    const g = groups.find(x => groupKey(x) === k);
+    if (!g) return;
+    setEditGroupMode(true);
+    prefillGroupForm(g);
+    setShowGroupModal(true);
+  };
+
+  async function saveGroupsLocally(next) {
+    setGroups(next);
+    writeLS(LS_KEY_GROUPS, next);
+  }
+
+  const onDeleteGroup = async () => {
+    if (!selectedGroups.size) return;
+    if (!confirm(`Delete ${selectedGroups.size} selected group(s)?`)) return;
+    const ids = Array.from(selectedGroups);
+    let deletedOK = false;
+    try {
+      const r = await fetch(`${API_BASE}/delete_group`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(getUid() ? { 'x-user-id': getUid() } : {}) },
+        body: JSON.stringify({ ids, names: ids })
+      });
+      if (r.ok) deletedOK = true;
+    } catch {}
+    if (!deletedOK) {
+      const next = groups.filter(g => !ids.includes(groupKey(g)));
+      await saveGroupsLocally(next);
+    } else {
+      await loadGroups();
+    }
+    setSelectedGroups(new Set());
+  };
+
+  const onSubmitGroup = async (e) => {
+    e.preventDefault();
+
+    const members = membersArrayFromForm();
+    const multiplierNum = groupForm.multiplier === '' ? 1 : Number(groupForm.multiplier);
+    if (!groupForm.name?.trim() || members.length === 0 || !isFinite(multiplierNum) || multiplierNum <= 0) {
+      alert('Please enter a group name, select at least one client, and set a positive multiplier.');
+      return;
+    }
+
+    const payload = {
+      id: groupForm.id || undefined,
+      name: groupForm.name.trim(),
+      multiplier: multiplierNum,
+      members
+    };
+
+    const endpoint = editGroupMode ? 'edit_group' : 'add_group';
+    let ok = false;
+    try {
+      const r = await fetch(`${API_BASE}/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(getUid() ? { 'x-user-id': getUid() } : {}) },
+        body: JSON.stringify(payload)
+      });
+      ok = r.ok;
+    } catch {}
+
+    if (!ok) {
+      if (editGroupMode) {
+        const k = payload.id ?? groupForm.name;
+        const next = groups.map(g => (groupKey(g) === k ? {
+          id: g.id ?? k, name: payload.name, multiplier: payload.multiplier, members: payload.members
+        } : g));
+        await saveGroupsLocally(next);
+      } else {
+        const tempId = `g_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+        const newG = { id: tempId, name: payload.name, multiplier: payload.multiplier, members: payload.members };
+        await saveGroupsLocally([newG, ...groups]);
+      }
+    } else {
+      await loadGroups();
+    }
+
+    setShowGroupModal(false);
+    setEditGroupMode(false);
+  };
+
+  // ===== Copy Trading helpers (TABLE UI like Group) =====
+  const openCopyModal = () => {
+    const rows = {};
+    clients.forEach(c => { rows[keyOf(c)] = { selected: false, mult: '1' }; });
+    setCopyForm({ name: '', master: '', rows });
+    setShowCopyModal(true);
+  };
+
+  const onSubmitCopy = async (e) => {
+    e.preventDefault();
+
+    const name = (copyForm.name || '').trim();
+    const master = (copyForm.master || '').trim();
+    if (!name || !master) {
+      alert('Please enter a setup name and select a Master account.');
+      return;
+    }
+
+    // Build children + multipliers from selected rows (excluding master)
+    const children = [];
+    const multipliers = {};
+    for (const [k, v] of Object.entries(copyForm.rows || {})) {
+      if (!v?.selected) continue;
+      const [, id] = k.split('::');
+      if (!id || id === master) continue;
+      children.push(id);
+      const m = parseFloat(v.mult);
+      multipliers[id] = !isFinite(m) || m <= 0 ? 1 : m;
+    }
+    if (children.length === 0) {
+      alert('Please choose at least one Child account.');
+      return;
+    }
+
+    const body = {
+      name, setup_name: name,
+      master, master_account: master,
+      children, child_accounts: children,
+      multipliers,
+      enabled: false,
+    };
+
+    try {
+      const r = await fetch(`${API_BASE}/save_copytrading_setup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(getUid() ? { 'x-user-id': getUid() } : {}) },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        alert(`Error saving setup: ${r.status} ${t}`);
+        return;
+      }
+      setShowCopyModal(false);
+    } catch {
+      alert('Network error while saving setup.');
+    }
+  };
+
+  // ===== Render =====
   return (
     <Card className="p-3">
-      <div className="d-flex mb-3" style={{ gap: 10 }}>
-        {subtab === "clients" ? (
+      {/* Toolbar */}
+      <div className="d-flex align-items-center mb-3" style={{ gap: 10 }}>
+        {subtab === 'clients' ? (
           <>
-            <Button variant="success" onClick={openAdd}>
-              Add Client
-            </Button>
-            <Button variant="secondary" disabled={selectedClients.size !== 1} onClick={openEdit}>
-              Edit
-            </Button>
-            <Button variant="danger" disabled={selectedClients.size === 0} onClick={onDelete}>
-              Delete
-            </Button>
+            <Button variant="success" onClick={openAdd}>Add Client</Button>
+            <Button variant="secondary" disabled={selectedClients.size !== 1} onClick={openEdit}>Edit</Button>
+            <Button variant="danger" disabled={!selectedClients.size} onClick={onDelete}>Delete</Button>
           </>
         ) : (
           <>
-            <Button variant="success" disabled>
-              Create Group
-            </Button>
-            <Button variant="secondary" disabled>
-              Edit Group
-            </Button>
-            <Button variant="danger" disabled>
-              Delete Group
-            </Button>
-            <Button variant="primary" disabled>
-              Copy Setup
-            </Button>
+            <Button variant="success" onClick={openCreateGroup}>Create Group</Button>
+            <Button variant="secondary" disabled={selectedGroups.size !== 1} onClick={openEditGroup}>Edit</Button>
+            <Button variant="danger" disabled={!selectedGroups.size} onClick={onDeleteGroup}>Delete</Button>
           </>
         )}
+        <div className="ms-auto d-flex" style={{ gap: 8 }}>
+          <Button variant="outline-secondary" onClick={() => { loadClients(); loadGroups(); }}>
+            Refresh
+          </Button>
+          {/* Open Copy Trading modal (table UI) */}
+          <Button variant="outline-info" onClick={openCopyModal}>
+            Copy Setup
+          </Button>
+        </div>
       </div>
 
-      <ButtonGroup className="mb-3">
-        <Button variant={subtab === "clients" ? "primary" : "outline-primary"} onClick={() => setSubtab("clients")}>
-          Clients
-        </Button>
-        <Button variant={subtab === "groups" ? "primary" : "outline-primary"} onClick={() => setSubtab("groups")}>
-          Groups
-        </Button>
-      </ButtonGroup>
+      {/* Subtabs */}
+      <div className="mb-3">
+        <ButtonGroup>
+          <Button
+            variant={subtab === 'clients' ? 'primary' : 'outline-primary'}
+            onClick={() => setSubtab('clients')}
+          >
+            Clients
+          </Button>
+          <Button
+            variant={subtab === 'group' ? 'primary' : 'outline-primary'}
+            onClick={() => setSubtab('group')}
+          >
+            Group
+          </Button>
+        </ButtonGroup>
+      </div>
 
-      {subtab === "clients" && (
-        <Table bordered hover responsive size="sm" className="align-middle">
+      {/* Clients Table */}
+      {subtab === 'clients' ? (
+        <Table bordered hover responsive size="sm">
           <thead>
             <tr>
-              <th style={{ width: "1%" }}>
+              <th style={{ width: 70 }}>
                 <Form.Check
                   type="checkbox"
                   checked={selectedClients.size === clients.length && clients.length > 0}
                   onChange={(e) => toggleAllClients(e.target.checked)}
                 />
               </th>
-              <th>Name</th>
-              <th>Broker</th>
-              <th>Status</th>
+              <th>Client Name</th>
+              <th>Capital</th>
+              <th>Session</th>
             </tr>
           </thead>
           <tbody>
-            {clients.length === 0 && (
-              <tr>
-                <td colSpan={4} className="text-center">
-                  No clients yet.
-                </td>
-              </tr>
-            )}
-            {clients.map((c) => {
+            {clients.length === 0 ? (
+              <tr><td colSpan={4} className="text-muted">No clients yet.</td></tr>
+            ) : clients.map((c) => {
               const k = keyOf(c);
+              const display = c.name || c.display_name || c.userid || c.client_id || '-';
+              const capital = c.capital ?? '-';
               return (
                 <tr key={k}>
                   <td>
@@ -584,42 +586,40 @@ export default function Clients() {
                       onChange={(e) => toggleOneClient(k, e.target.checked)}
                     />
                   </td>
-                  <td>{c.name || c.display_name || c.userid || c.client_id}</td>
-                  <td>{c.broker || ""}</td>
+                  <td>{display}</td>
+                  <td>{capital}</td>
                   <td>{statusBadge(c)}</td>
                 </tr>
               );
             })}
           </tbody>
         </Table>
-      )}
-
-      {subtab === "groups" && (
-        <Table bordered hover responsive size="sm" className="align-middle">
+      ) : (
+        // Groups Table
+        <Table bordered hover responsive size="sm">
           <thead>
             <tr>
-              <th style={{ width: "1%" }}>
+              <th style={{ width: 70 }}>
                 <Form.Check
                   type="checkbox"
                   checked={selectedGroups.size === groups.length && groups.length > 0}
                   onChange={(e) => toggleAllGroups(e.target.checked)}
                 />
               </th>
-              <th>Name</th>
+              <th>Group Name</th>
               <th>Multiplier</th>
               <th>Members</th>
+              <th>Preview</th>
             </tr>
           </thead>
           <tbody>
-            {groups.length === 0 && (
-              <tr>
-                <td colSpan={4} className="text-center">
-                  No groups yet.
-                </td>
-              </tr>
-            )}
-            {groups.map((g) => {
+            {groups.length === 0 ? (
+              <tr><td colSpan={5} className="text-muted">No groups yet.</td></tr>
+            ) : groups.map((g) => {
               const k = groupKey(g);
+              const mems = g.members || [];
+              const preview = mems.slice(0, 3).map(m => `${m.userid}`).join(', ')
+                + (mems.length > 3 ? ` +${mems.length - 3}` : '');
               return (
                 <tr key={k}>
                   <td>
@@ -629,9 +629,10 @@ export default function Clients() {
                       onChange={(e) => toggleOneGroup(k, e.target.checked)}
                     />
                   </td>
-                  <td>{g.name}</td>
-                  <td>{g.multiplier}</td>
-                  <td>{(g.members || []).map((m) => `${(m.broker || "").toUpperCase()}:${m.userid || m.client_id}`).join(", ")}</td>
+                  <td>{g.name || '-'}</td>
+                  <td>{g.multiplier ?? '-'}</td>
+                  <td>{mems.length}</td>
+                  <td className="text-muted">{mems.length ? (preview || '-') : '-'}</td>
                 </tr>
               );
             })}
@@ -639,111 +640,274 @@ export default function Clients() {
         </Table>
       )}
 
-      {/* Add/Edit Client Modal (same as your UI) */}
+      {/* Client Modal */}
       <Modal show={showModal} onHide={() => { setShowModal(false); pollingAbortRef.current = true; }}>
         <Form onSubmit={onSubmit}>
-          <Modal.Header closeButton>
-            <Modal.Title>{editMode ? "Edit Client" : "Add Client"}</Modal.Title>
-          </Modal.Header>
+          <Modal.Header closeButton><Modal.Title>{editMode ? 'Edit Client' : 'Add Client'}</Modal.Title></Modal.Header>
           <Modal.Body>
-            <Form.Group className="mb-3">
-              <Form.Label>Broker</Form.Label>
-              <Form.Select
-                value={broker}
-                disabled={editMode}
-                onChange={(e) => {
-                  setBroker(e.target.value);
-                  setAddForm({ name: "", userid: "", mobile: "", pin: "", apikey: "", api_secret: "", totpkey: "", capital: "" });
-                }}
-              >
-                <option value="dhan">Dhan</option>
-                <option value="motilal">Motilal</option>
-              </Form.Select>
-            </Form.Group>
+            
 
             <Form.Group className="mb-2">
               <Form.Label>Name</Form.Label>
-              <Form.Control value={addForm.name} onChange={(e) => setAddForm((p) => ({ ...p, name: e.target.value }))} />
+              <Form.Control value={addForm.name} onChange={(e) => setAddForm(p => ({ ...p, name: e.target.value }))} />
             </Form.Group>
-
             <Form.Group className="mb-2">
               <Form.Label>Client ID *</Form.Label>
-              <Form.Control
-                required
-                disabled={editMode}
-                value={addForm.userid}
-                onChange={(e) => setAddForm((p) => ({ ...p, userid: e.target.value.trim() }))}
-              />
+              <Form.Control value={addForm.userid} disabled={editMode} required onChange={(e) => setAddForm(p => ({ ...p, userid: e.target.value.trim() }))} />
             </Form.Group>
 
-            <Form.Group className="mb-2">
-              <Form.Label>Mobile Number *</Form.Label>
-              <Form.Control
-                required={broker === "dhan"}
-                value={addForm.mobile}
-                onChange={(e) => setAddForm((p) => ({ ...p, mobile: e.target.value.trim() }))}
-              />
-            </Form.Group>
+            <>
+              <Form.Group className="mb-2">
+                <Form.Label>Password *</Form.Label>
+                <Form.Control
+                  type="password"
+                  required
+                  value={addForm.password}
+                  onChange={(e) => setAddForm(p => ({ ...p, password: e.target.value }))}
+                />
+              </Form.Group>
 
-            <Form.Group className="mb-2">
-              <Form.Label>{broker === "dhan" ? "PIN *" : "Password *"}</Form.Label>
-              <Form.Control
-                type="password"
-                required
-                value={addForm.pin}
-                onChange={(e) => setAddForm((p) => ({ ...p, pin: e.target.value.trim() }))}
-              />
-            </Form.Group>
+              <Form.Group className="mb-2">
+                <Form.Label>PAN (optional)</Form.Label>
+                <Form.Control
+                  value={addForm.pan}
+                  onChange={(e) => setAddForm(p => ({ ...p, pan: e.target.value }))}
+                />
+              </Form.Group>
 
-            <Form.Group className="mb-2">
-              <Form.Label>API Key *</Form.Label>
-              <Form.Control
-                required
-                value={addForm.apikey}
-                onChange={(e) => setAddForm((p) => ({ ...p, apikey: e.target.value.trim() }))}
-              />
-            </Form.Group>
+              <Form.Group className="mb-2">
+                <Form.Label>API Key (optional)</Form.Label>
+                <Form.Control
+                  value={addForm.apikey}
+                  onChange={(e) => setAddForm(p => ({ ...p, apikey: e.target.value }))}
+                />
+              </Form.Group>
 
-            <Form.Group className="mb-2">
-              <Form.Label>{broker === "dhan" ? "API Secret *" : "PAN *"}</Form.Label>
-              <Form.Control
-                type="password"
-                required
-                value={addForm.api_secret}
-                onChange={(e) => setAddForm((p) => ({ ...p, api_secret: e.target.value.trim() }))}
-              />
-            </Form.Group>
-
-            <Form.Group className="mb-2">
-              <Form.Label>TOTP Key {broker === "dhan" ? "*" : "(optional)"}</Form.Label>
-              <Form.Control
-                type="password"
-                required={broker === "dhan"}
-                value={addForm.totpkey}
-                onChange={(e) => setAddForm((p) => ({ ...p, totpkey: e.target.value.trim() }))}
-              />
-              <Form.Text muted>Used for auto login OTP generation.</Form.Text>
-            </Form.Group>
+              <Form.Group className="mb-2">
+                <Form.Label>TOTP Key (optional)</Form.Label>
+                <Form.Control
+                  value={addForm.totpkey}
+                  onChange={(e) => setAddForm(p => ({ ...p, totpkey: e.target.value }))}
+                />
+              </Form.Group>
+            </>/>
+                </Form.Group>
+                <Form.Group className="mb-2">
+                  <Form.Label>PAN *</Form.Label>
+                  <Form.Control required value={addForm.pan} onChange={(e) => setAddForm(p => ({ ...p, pan: e.target.value }))} />
+                </Form.Group>
+                <Form.Group className="mb-2">
+                  <Form.Label>API Key *</Form.Label>
+                  <Form.Control type="password" required value={addForm.apikey} onChange={(e) => setAddForm(p => ({ ...p, apikey: e.target.value }))} />
+                </Form.Group>
+                <Form.Group className="mb-2">
+                  <Form.Label>TOTP Key (optional)</Form.Label>
+                  <Form.Control type="password" value={addForm.totpkey} onChange={(e) => setAddForm(p => ({ ...p, totpkey: e.target.value }))} />
+                </Form.Group>
+              </>
+            )}
 
             <Form.Group className="mb-2">
               <Form.Label>Capital</Form.Label>
-              <Form.Control
-                type="number"
-                step="0.01"
-                min="0"
-                value={addForm.capital}
-                onChange={(e) => setAddForm((p) => ({ ...p, capital: e.target.value }))}
-              />
+              <Form.Control type="number" step="0.01" min="0" value={addForm.capital} onChange={(e) => setAddForm(p => ({ ...p, capital: e.target.value }))} placeholder="e.g. 100000" />
             </Form.Group>
           </Modal.Body>
-
           <Modal.Footer>
-            <Button variant="secondary" onClick={() => { setShowModal(false); pollingAbortRef.current = true; }}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary">
-              Save & Login
-            </Button>
+            <Button variant="secondary" onClick={() => { setShowModal(false); pollingAbortRef.current = true; }}>Cancel</Button>
+            <Button type="submit" variant="primary">{editMode ? 'Save Changes & Login' : 'Save & Login'}</Button>
+          </Modal.Footer>
+        </Form>
+      </Modal>
+
+      {/* Group Modal */}
+      <Modal show={showGroupModal} onHide={() => setShowGroupModal(false)} size="lg">
+        <Form onSubmit={onSubmitGroup}>
+          <Modal.Header closeButton>
+            <Modal.Title>{editGroupMode ? 'Edit Group' : 'Create Group'}</Modal.Title>
+          </Modal.Header>
+          <Modal.Body>
+            <Form.Group className="mb-3">
+              <Form.Label>Group Name *</Form.Label>
+              <Form.Control
+                value={groupForm.name}
+                required
+                onChange={(e) => setGroupForm(p => ({ ...p, name: e.target.value }))}
+              />
+            </Form.Group>
+
+            <Form.Group className="mb-3" style={{ maxWidth: 260 }}>
+              <Form.Label>Multiplier *</Form.Label>
+              <Form.Control
+                type="number"
+                min="0.01"
+                step="0.01"
+                required
+                value={groupForm.multiplier}
+                onChange={(e) => setGroupForm(p => ({ ...p, multiplier: e.target.value }))}
+              />
+              <Form.Text muted>Applied to quantities for the whole group.</Form.Text>
+            </Form.Group>
+
+            <div className="mb-2 fw-semibold">Select Clients</div>
+            <Table bordered hover responsive size="sm">
+              <thead>
+                <tr>
+                  <th style={{ width: 70 }}>Add</th>
+                  <th>Client</th>
+                  <th>Broker</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clients.length === 0 ? (
+                  <tr><td colSpan={3} className="text-muted">No clients to add.</td></tr>
+                ) : clients.map((c) => {
+                  const k = keyOf(c);
+                  const checked = !!(groupForm.members || {})[k];
+                  return (
+                    <tr key={k}>
+                      <td>
+                        <Form.Check
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const v = e.target.checked;
+                            setGroupForm(p => {
+                              const m = { ...(p.members || {}) };
+                              if (v) m[k] = true; else delete m[k];
+                              return { ...p, members: m };
+                            });
+                          }}
+                        />
+                      </td>
+                      <td>{c.name || c.display_name || c.userid || c.client_id || '-'}</td>
+                      <td className="text-capitalize">{(c.broker || '').toLowerCase()}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </Table>
+            <div className="text-muted" style={{ fontSize: 12 }}>
+              Tip: Quantities will be scaled by this group Multiplier.
+            </div>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="secondary" onClick={() => setShowGroupModal(false)}>Cancel</Button>
+            <Button type="submit" variant="primary">{editGroupMode ? 'Save Group' : 'Create Group'}</Button>
+          </Modal.Footer>
+        </Form>
+      </Modal>
+
+      {/* Copy Trading Modal — TABLE like Group with per-client Multiplier */}
+      <Modal show={showCopyModal} onHide={() => setShowCopyModal(false)} size="lg">
+        <Form onSubmit={onSubmitCopy}>
+          <Modal.Header closeButton>
+            <Modal.Title>Create Copy Trading Setup</Modal.Title>
+          </Modal.Header>
+          <Modal.Body>
+            <Form.Group className="mb-3" style={{ maxWidth: 420 }}>
+              <Form.Label>Setup Name *</Form.Label>
+              <Form.Control
+                value={copyForm.name}
+                required
+                onChange={(e) => setCopyForm(p => ({ ...p, name: e.target.value }))}
+              />
+            </Form.Group>
+
+            <Form.Group className="mb-3" style={{ maxWidth: 420 }}>
+              <Form.Label>Select Master Account *</Form.Label>
+              <Form.Select
+                value={copyForm.master}
+                required
+                onChange={(e) => {
+                  const master = e.target.value;
+                  setCopyForm(p => {
+                    // ensure master is not selected as child
+                    const rows = { ...(p.rows || {}) };
+                    Object.keys(rows).forEach(k => {
+                      const id = k.split('::')[1];
+                      if (id === master) rows[k].selected = false;
+                    });
+                    return { ...p, master, rows };
+                  });
+                }}
+              >
+                <option value="">-- Select Master --</option>
+                {clients.map(c => {
+                  const id = c.userid || c.client_id || '';
+                  const label = `${c.name || c.display_name || id} : ${id}`;
+                  return <option key={`m-${id}`} value={id}>{label}</option>;
+                })}
+              </Form.Select>
+            </Form.Group>
+
+            <div className="mb-2 fw-semibold">Select Child Accounts & Multipliers</div>
+            <Table bordered hover responsive size="sm">
+              <thead>
+                <tr>
+                  <th style={{ width: 70 }}>Add</th>
+                  <th>Client</th>
+                  <th>Broker</th>
+                  <th style={{ width: 180 }}>Multiplier</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clients.length === 0 ? (
+                  <tr><td colSpan={4} className="text-muted">No clients.</td></tr>
+                ) : clients.map((c) => {
+                  const k   = keyOf(c);
+                  const id  = c.userid || c.client_id || '';
+                  const isMaster = copyForm.master && id === copyForm.master;
+                  const row = copyForm.rows[k] || { selected: false, mult: '1' };
+                  const label = `${c.name || c.display_name || id} : ${id}`;
+
+                  return (
+                    <tr key={`copy-${k}`}>
+                      <td>
+                        <Form.Check
+                          type="checkbox"
+                          disabled={isMaster}
+                          checked={!isMaster && !!row.selected}
+                          onChange={(e) => {
+                            const v = e.target.checked;
+                            setCopyForm(p => {
+                              const rows = { ...(p.rows || {}) };
+                              rows[k] = { ...(rows[k] || { mult: '1' }), selected: v };
+                              return { ...p, rows };
+                            });
+                          }}
+                        />
+                      </td>
+                      <td>{label}</td>
+                      <td className="text-capitalize">{(c.broker || '').toLowerCase()}</td>
+                      <td>
+                        <Form.Control
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          disabled={isMaster || !row.selected}
+                          value={row.mult ?? '1'}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setCopyForm(p => {
+                              const rows = { ...(p.rows || {}) };
+                              rows[k] = { ...(rows[k] || { selected: false }), mult: val };
+                              return { ...p, rows };
+                            });
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </Table>
+            <div className="text-muted" style={{ fontSize: 12 }}>
+              Tip: Master cannot be a child. Each child can have its own Multiplier.
+            </div>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="secondary" onClick={() => setShowCopyModal(false)}>Cancel</Button>
+            <Button type="submit" variant="success">Save Setup</Button>
           </Modal.Footer>
         </Form>
       </Modal>
