@@ -18,19 +18,34 @@ const LS_KEY_USERID = "mb_logged_in_userid_v1";
 const detectUserFromWelcomeText = () => {
   if (typeof window === "undefined") return "";
   try {
+    // Find any element whose text starts with "Welcome,"
     const all = Array.from(document.querySelectorAll("*"));
     const el = all.find((n) => {
       const t = (n?.textContent || "").trim();
       return /^welcome\s*,/i.test(t);
     });
     if (!el) return "";
+
+    // Some navbars render a separate "Logout" link very close,
+    // so textContent can become "Welcome, praLogout" or "Welcome, pra Logout".
     const t = (el.textContent || "").trim();
-    const m = t.match(/^welcome\s*,\s*(.+)$/i);
-    return (m?.[1] || "").trim();
+
+    // Take the first token after "Welcome," (until whitespace)
+    const m = t.match(/^welcome\s*,\s*([^\s]+)/i);
+    let u = (m?.[1] || "").trim();
+
+    // If Logout got glued to the username, strip it
+    u = u.replace(/logout$/i, "").trim();
+
+    // Clean leftover separators
+    u = u.replace(/[|,:;]+$/g, "").trim();
+
+    return u;
   } catch {
     return "";
   }
 };
+
 
 const readLS = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } };
 const writeLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
