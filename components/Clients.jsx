@@ -44,7 +44,7 @@ const safeJson = async (r) => {
   } catch {
     return null;
   }
-
+};
 
 // Normalize different backend response shapes into a flat clients array
 const normalizeClients = (j) => {
@@ -57,20 +57,25 @@ const normalizeClients = (j) => {
     if (Array.isArray(c)) return c;
   }
 
-  // broker keyed object: { motilal:[...], dhan:[...], ... } or { clients_by_broker:{...} }
-  const maybeMap = j.clients_by_broker && typeof j.clients_by_broker === "object" ? j.clients_by_broker : j;
+  // broker keyed object: { motilal:[...], dhan:[...], ... }
+  const maybeMap =
+    j.clients_by_broker && typeof j.clients_by_broker === "object" ? j.clients_by_broker : j;
+
   if (maybeMap && typeof maybeMap === "object") {
     const out = [];
     for (const [k, v] of Object.entries(maybeMap)) {
       if (Array.isArray(v)) {
         out.push(...v.map((x) => ({ broker: x?.broker || k, ...x })));
+      } else if (v && typeof v === "object") {
+        // handle map-of-clients: { broker: { id1:{...}, id2:{...} } }
+        const vals = Object.values(v).filter((x) => x && typeof x === "object");
+        if (vals.length) out.push(...vals.map((x) => ({ broker: x?.broker || k, ...x })));
       }
     }
     if (out.length) return out;
   }
 
   return [];
-};
 };
 
 // POST helper: try multiple endpoints until one is not 404
@@ -200,23 +205,13 @@ export default function Clients() {
   async function fetchClientsFor(uid) {
     const headers = uid ? { "x-user-id": uid } : undefined;
 
-    // Try a bunch of common variants (your backend may implement any one of these)
     const urls = [
-      // path-style
-      `${API_BASE}/clients/${encodeURIComponent(uid)}`,
-      `${API_BASE}/clients/${encodeURIComponent(uid)}/all`,
-      `${API_BASE}/get_clients/${encodeURIComponent(uid)}`,
-
-      // query-style
-      `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`,
-      `${API_BASE}/clients?userid=${encodeURIComponent(uid)}`,
-      `${API_BASE}/clients?uid=${encodeURIComponent(uid)}`,
+      `${API_BASE}/get_clients`,
       `${API_BASE}/get_clients?user_id=${encodeURIComponent(uid)}`,
       `${API_BASE}/get_clients?userid=${encodeURIComponent(uid)}`,
-
-      // header-style only
+      `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`,
+      `${API_BASE}/clients?userid=${encodeURIComponent(uid)}`,
       `${API_BASE}/clients`,
-      `${API_BASE}/get_clients`,
     ];
 
     let lastArr = null;
@@ -224,18 +219,10 @@ export default function Clients() {
     for (const url of urls) {
       try {
         const r = await fetch(url, { cache: "no-store", headers });
-
-        // If backend says "not found", try next url
-        if (r.status === 404) continue;
         if (!r.ok) continue;
-
         const j = await safeJson(r);
         const arr = normalizeClients(j);
-
-        // If it returned a non-empty list, take it immediately
         if (Array.isArray(arr) && arr.length > 0) return arr;
-
-        // Remember last empty array so UI can show "No clients yet" cleanly
         if (Array.isArray(arr)) lastArr = arr;
       } catch {}
     }
@@ -525,13 +512,6 @@ export default function Clients() {
       <div className="d-flex mb-3" style={{ gap: 10 }}>
         {subtab === "clients" ? (
           <>
-            <Form.Control
-              size="sm"
-              style={{ maxWidth: 220 }}
-              placeholder="Logged-in User ID"
-              value={userId}
-              onChange={(e) => saveUserId(e.target.value)}
-            />
             <Button variant="success" onClick={openAdd}>
               Add Client
             </Button>
