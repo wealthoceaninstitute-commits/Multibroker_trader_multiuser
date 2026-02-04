@@ -4,893 +4,784 @@ import { useEffect, useMemo, useState, useRef } from 'react';
 import { Card, Button, Modal, Form, Table, Badge, ButtonGroup } from 'react-bootstrap';
 
 // NOTE:
-// This component is a full drop‑in replacement for the existing Clients
-// component.  It retains all of the original behaviour and form layout
-// while enabling support for the Motilal broker.  The modal fields are
-// identical to the attached file – Name, Client ID, Mobile Number,
-// PIN, API Key, API Secret, TOTP Key and Capital – and these fields
-// appear for both Dhan and Motilal accounts.  Internally the values
-// entered in these inputs are mapped to the appropriate credential
-// properties for each broker.  See the onSubmit handler for details.
+// This component is a full drop-in "Clients" page/module.
+// - Uses API_BASE env (NEXT_PUBLIC_API_BASE recommended)
+// - Loads clients from `${API_BASE}/clients`
+// - Adds client via `${API_BASE}/add_client`
+// - Keeps UI simple and broker-aware credentials fields
+// - Includes lightweight frontend-only "Groups" and "Copy Trading setups" helpers (optional sections)
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:5001';
+// ---------------- env / fetch helpers ----------------
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.NEXT_PUBLIC_API ||
+  '';
 
-// ----- helpers -----
-const LS_KEY_GROUPS = 'mb_groups_v2_groupMultiplier';
-const readLS = (k, d) => {
+const safeJson = async (res) => {
+  const txt = await res.text();
   try {
-    const v = JSON.parse(localStorage.getItem(k));
-    return v ?? d;
-  } catch {
-    return d;
+    return JSON.parse(txt);
+  } catch (e) {
+    return { ok: false, raw: txt, status: res.status };
   }
 };
-const writeLS = (k, v) => {
-  try {
-    localStorage.setItem(k, JSON.stringify(v));
-  } catch {}
+
+const fetchJson = async (url, opts = {}) => {
+  const res = await fetch(url, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+    cache: 'no-store',
+  });
+  const data = await safeJson(res);
+  if (!res.ok) {
+    const msg = (data && (data.detail || data.error || data.message)) || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return data;
 };
 
+// ---------------- small UI helpers ----------------
+const nowIso = () => new Date().toISOString();
+
+const toNum = (v) => {
+  const n = Number(String(v ?? '').replace(/,/g, '').trim());
+  return Number.isFinite(n) ? n : 0;
+};
+
+const capStr = (s) => (s ? String(s).trim() : '');
+
+const clientKey = (broker, client_id) => `${broker}-${client_id}`;
+
+// ---------------- Component ----------------
 export default function Clients() {
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+  const [info, setInfo] = useState('');
+
   const [clients, setClients] = useState([]);
-  const [selectedClients, setSelectedClients] = useState(new Set());
-  const [subtab, setSubtab] = useState('clients');
+  const [selectedKey, setSelectedKey] = useState('');
 
-  const [showModal, setShowModal] = useState(false);
-  const [editMode, setEditMode] = useState(false);
+  // Add Client modal
+  const [showAdd, setShowAdd] = useState(false);
+  const [addBroker, setAddBroker] = useState('dhan');
 
-  const [broker, setBroker] = useState('dhan');
+  // IMPORTANT: Keep shape stable to avoid input state bugs
   const [addForm, setAddForm] = useState({
+    // shared
     name: '',
-    userid: '',
-    mobile: '',
-    pin: '',
-    apikey: '',
-    api_secret: '',
-    totpkey: '',
+    client_id: '',
     capital: '',
+    // broker-specific
+    apikey: '', // dhan access token
+    password: '', // motilal
+    pan: '', // motilal optional
+    mpin: '', // motilal optional (or TOTP/MPIN style)
+    totp: '', // motilal optional
   });
 
-  const [editingKey, setEditingKey] = useState({ broker: null, userid: null });
-
-  const [loggingNow, setLoggingNow] = useState(new Set());
-  const pollingAbortRef = useRef(false);
-
-  // Groups
+  // Frontend-only Groups
   const [groups, setGroups] = useState([]);
-  const [selectedGroups, setSelectedGroups] = useState(new Set());
-  const [showGroupModal, setShowGroupModal] = useState(false);
-  const [editGroupMode, setEditGroupMode] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
 
-  const [groupForm, setGroupForm] = useState({
-    id: null,
-    name: '',
-    multiplier: '1',
-    members: {},
-  });
-
+  // Frontend-only Copy setups
+  const [copySetups, setCopySetups] = useState([]);
   const [showCopyModal, setShowCopyModal] = useState(false);
   const [copyForm, setCopyForm] = useState({
     name: '',
-    master: '',
-    rows: {},
+    leader: '',
+    followers: [],
+    mode: 'mirror',
+    multiplier: '1',
+    maxPerTrade: '',
+    created_at: '',
   });
 
-  // Load clients and groups on mount
-  async function loadClients() {
-    const uid = userId || (typeof window !== 'undefined' ? (localStorage.getItem(LS_KEY_USERID) || '') : '');
-    if (!uid) {
-      // No logged-in user selected yet
-      setClients([]);
-      return;
-    }
-    try {
-      const url = `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`;
-      const r = await fetch(url, {
-        cache: 'no-store',
-        headers: { 'x-user-id': uid },
-      });
-      const j = await r.json();
-      setClients(Array.isArray(j) ? j : j.clients || []);
-    } catch {
-      setClients([]);
-    }
-  }}
+  const mounted = useRef(false);
 
-  async function loadGroups() {
-    try {
-      const r = await fetch(`${API_BASE}/groups`, { cache: 'no-store' });
-      if (r.ok) {
-        const j = await r.json();
-        const arr = Array.isArray(j) ? j : j.groups || [];
-        setGroups(arr);
-        writeLS(LS_KEY_GROUPS, arr);
-        return;
-      }
-      throw new Error('not ready');
-    } catch {
-      setGroups(readLS(LS_KEY_GROUPS, []));
-    }
-  }
-
+  // ---------------- load / persist (optional local) ----------------
   useEffect(() => {
-    loadGroups();
+    mounted.current = true;
+
+    // Load local group + copy setup state (frontend-only)
+    try {
+      const g = localStorage.getItem('woi_groups_v1');
+      if (g) setGroups(JSON.parse(g));
+    } catch {}
+    try {
+      const c = localStorage.getItem('woi_copy_setups_v1');
+      if (c) setCopySetups(JSON.parse(c));
+    } catch {}
+
+    return () => {
+      mounted.current = false;
+    };
   }, []);
 
   useEffect(() => {
-    loadClients();
-  }, [userId]);
-
-  // Key helper: derive a unique key from broker + userid
-  const keyOf = (c) => `${(c.broker || '').toLowerCase()}::${c.userid || c.client_id || ''}`;
-  const allClientKeys = useMemo(() => clients.map(keyOf), [clients]);
-  const toggleAllClients = (ch) => setSelectedClients(ch ? new Set(allClientKeys) : new Set());
-  const toggleOneClient = (k, ch) =>
-    setSelectedClients((prev) => {
-      const s = new Set(prev);
-      ch ? s.add(k) : s.delete(k);
-      return s;
-    });
-
-  // Group helpers
-  const groupKey = (g) => g.id || g.name;
-  const allGroupKeys = useMemo(() => groups.map(groupKey), [groups]);
-  const toggleAllGroups = (ch) => setSelectedGroups(ch ? new Set(allGroupKeys) : new Set());
-  const toggleOneGroup = (k, ch) =>
-    setSelectedGroups((prev) => {
-      const s = new Set(prev);
-      ch ? s.add(k) : s.delete(k);
-      return s;
-    });
-
-  // Display session status badge
-  const statusBadge = (c) => {
-    const k = keyOf(c);
-    if (loggingNow.has(k)) return <Badge bg="warning">logging…</Badge>;
-    const s = c.session_active === true
-      ? 'logged_in'
-      : c.session_active === false
-      ? 'logged_out'
-      : c.status || 'pending';
-    const v = s === 'logged_in' ? 'success' : s === 'logged_out' ? 'secondary' : s === 'failed' ? 'danger' : 'warning';
-    return <Badge bg={v}>{s}</Badge>;
-  };
-
-  // Open add modal
-  const openAdd = () => {
-    setEditMode(false);
-    setBroker('dhan');
-    setAddForm({ name: '', userid: '', mobile: '', pin: '', apikey: '', api_secret: '', totpkey: '', capital: '' });
-    setEditingKey({ broker: null, userid: null });
-    setShowModal(true);
-  };
-
-  // Open edit modal
-  const openEdit = () => {
-    if (selectedClients.size !== 1) return;
-    const k = [...selectedClients][0];
-    const row = clients.find((c) => keyOf(c) === k);
-    if (!row) return;
-    setEditMode(true);
-    const b = (row.broker || '').toLowerCase();
-    setBroker(b);
-    setAddForm({
-      name: row.name || row.display_name || '',
-      userid: row.userid || row.client_id || '',
-      mobile: row.mobile || '',
-      pin: row.pin || '',
-      apikey: row.apikey || '',
-      api_secret: row.api_secret || row.pan || '',
-      totpkey: row.totpkey || '',
-      capital: row.capital?.toString?.() || '',
-    });
-    setEditingKey({ broker: b, userid: row.userid || row.client_id || '' });
-    setShowModal(true);
-  };
-
-  // Delete selected clients
-  const onDelete = async () => {
-    if (!selectedClients.size) return;
-    if (!confirm(`Delete ${selectedClients.size} client(s)?`)) return;
-    const uid = userId || (typeof window !== 'undefined' ? (localStorage.getItem(LS_KEY_USERID) || '') : '');
-    if (!uid) { setError('User ID is not set. Please enter Logged-in User ID above.'); return; }
-
-    const items = [...selectedClients]
-      .map((k) => {
-        const r = clients.find((c) => keyOf(c) === k);
-        return { broker: (r?.broker || '').toLowerCase(), userid: r?.userid || r?.client_id || '' };
-      })
-      .filter(Boolean);
     try {
-      await fetch(`${API_BASE}/delete_client`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': uid },
-        body: JSON.stringify({ user_id: uid, items }),
-      });
-      await loadClients();
+      localStorage.setItem('woi_groups_v1', JSON.stringify(groups));
     } catch {}
-    setSelectedClients(new Set());
-  };
+  }, [groups]);
 
-  // Poll until client logs in after adding/editing
-  async function pollUntilLoggedIn(broker, userid, { intervalMs = 1000, maxTries = 15 } = {}) {
-    const targetKey = `${broker}::${userid}`;
-    setLoggingNow((prev) => new Set(prev).add(targetKey));
-    pollingAbortRef.current = false;
-    let tries = 0;
-    while (!pollingAbortRef.current && tries < maxTries) {
-      try {
-        const r = await fetch(`${API_BASE}/clients`, { cache: 'no-store' });
-        const j = await r.json();
-        const list = Array.isArray(j) ? j : j.clients || [];
-        const hit = list.find(
-          (c) => (c.broker || '').toLowerCase() === broker && (c.userid || c.client_id || '') === userid
-        );
-        if (hit) {
-          setClients(list);
-          if (hit.session_active === true) break;
-        }
-      } catch {}
-      tries++;
-      await new Promise((res) => setTimeout(res, intervalMs));
-    }
-    setLoggingNow((prev) => {
-      const n = new Set(prev);
-      n.delete(targetKey);
-      return n;
-    });
-  }
-
-  // Submit add/edit client
-  const onSubmit = async (e) => {
-    e.preventDefault();
-    // Dhan required fields validation
-    if (broker === 'dhan') {
-      if (!addForm.mobile || !addForm.pin || !addForm.apikey || !addForm.api_secret || !addForm.totpkey) {
-        alert('All Dhan fields are required.');
-        return;
-      }
-    }
-    // Motilal required fields validation
-    if (broker === 'motilal') {
-      if (!addForm.apikey || !addForm.pin || !addForm.api_secret) {
-        alert('API Key, Password and PAN are required for Motilal.');
-        return;
-      }
-    }
-    const capitalNum = addForm.capital === '' ? undefined : Number(addForm.capital) || 0;
-    const creds =
-      broker === 'dhan'
-        ? {
-            mobile: addForm.mobile,
-            pin: addForm.pin,
-            apikey: addForm.apikey,
-            api_secret: addForm.api_secret,
-            totpkey: addForm.totpkey,
-          }
-        : broker === 'motilal'
-        ? {
-            apikey: addForm.apikey,
-            password: addForm.pin,
-            pan: addForm.api_secret,
-            totpkey: addForm.totpkey,
-          }
-        : {};
-    const bodyBase = {
-      broker,
-      name: addForm.name || undefined,
-      client_id: addForm.userid,
-      user_id: uid,
-      capital: capitalNum,
-      creds,
-      ...creds,
-    };
-    if (editMode && editingKey.userid) {
-      bodyBase._original = { broker: editingKey.broker, userid: editingKey.userid };
-      bodyBase.original_broker = editingKey.broker;
-      bodyBase.original_userid = editingKey.userid;
-    }
-    const endpoint = editMode ? 'edit_client' : 'add_client';
+  useEffect(() => {
     try {
-      const r = await fetch(`${API_BASE}/${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': uid },
-        body: JSON.stringify(bodyBase),
-      });
-      setShowModal(false);
-      setSelectedClients(new Set());
-      await loadClients();
-      const b = (editMode ? editingKey.broker : broker) || broker;
-      const id = editMode ? editingKey.userid : addForm.userid;
-      if (b && id) pollUntilLoggedIn(b, id);
-      if (!r.ok) {
-        console.warn(`/${endpoint} failed`, await r.text().catch(() => ''));
-      }
-    } catch {
-      setShowModal(false);
-    }
-  };
-
-  // Members array helper for groups
-  const membersArrayFromForm = () => {
-    const a = [];
-    for (const k of Object.keys(groupForm.members || {})) {
-      if (!groupForm.members[k]) continue;
-      const [b, id] = k.split('::');
-      if (!b || !id) continue;
-      a.push({ broker: b, userid: id });
-    }
-    return a;
-  };
-
-  const prefillGroupForm = (g) => {
-    const map = {};
-    (g.members || []).forEach((m) => {
-      const k = `${(m.broker || '').toLowerCase()}::${m.userid || m.client_id || ''}`;
-      map[k] = true;
-    });
-    setGroupForm({
-      id: g.id ?? null,
-      name: g.name || '',
-      multiplier: g.multiplier?.toString?.() || '1',
-      members: map,
-    });
-  };
-  const openCreateGroup = () => {
-    setEditGroupMode(false);
-    setGroupForm({ id: null, name: '', multiplier: '1', members: {} });
-    setShowGroupModal(true);
-  };
-  const openEditGroup = () => {
-    if (selectedGroups.size !== 1) return;
-    const k = [...selectedGroups][0];
-    const g = groups.find((x) => groupKey(x) === k);
-    if (!g) return;
-    setEditGroupMode(true);
-    prefillGroupForm(g);
-    setShowGroupModal(true);
-  };
-  async function saveGroupsLocally(next) {
-    setGroups(next);
-    writeLS(LS_KEY_GROUPS, next);
-  }
-  const onDeleteGroup = async () => {
-    if (!selectedGroups.size) return;
-    if (!confirm(`Delete ${selectedGroups.size} group(s)?`)) return;
-    const ids = [...selectedGroups];
-    let ok = false;
-    try {
-      const r = await fetch(`${API_BASE}/delete_group`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': uid },
-        body: JSON.stringify({ ids, names: ids }),
-      });
-      ok = r.ok;
+      localStorage.setItem('woi_copy_setups_v1', JSON.stringify(copySetups));
     } catch {}
-    if (!ok) {
-      const next = groups.filter((g) => !ids.includes(groupKey(g)));
-      await saveGroupsLocally(next);
-    } else {
-      await loadGroups();
-    }
-    setSelectedGroups(new Set());
-  };
-  const onSubmitGroup = async (e) => {
-    e.preventDefault();
-    const members = membersArrayFromForm();
-    const m = groupForm.multiplier === '' ? 1 : Number(groupForm.multiplier);
-    if (!groupForm.name.trim() || members.length === 0 || !isFinite(m) || m <= 0) {
-      alert('Enter name, select members & valid multiplier.');
+  }, [copySetups]);
+
+  const loadClients = async () => {
+    if (!API_BASE) {
+      setErr('Missing API base URL. Set NEXT_PUBLIC_API_BASE in Vercel/ENV.');
       return;
     }
-    const payload = {
-      id: groupForm.id || undefined,
-      name: groupForm.name.trim(),
-      multiplier: m,
-      members,
-    };
-    const endpoint = editGroupMode ? 'edit_group' : 'add_group';
-    let ok = false;
+    setErr('');
+    setInfo('');
+    setLoading(true);
     try {
-      const r = await fetch(`${API_BASE}/${endpoint}`, {
+      const data = await fetchJson(`${API_BASE}/clients`);
+      const list = Array.isArray(data) ? data : (data.clients || []);
+      setClients(list);
+      // Auto-select first client if none selected
+      if (!selectedKey && list.length > 0) {
+        const c0 = list[0];
+        const k0 = clientKey(c0.broker || '', c0.client_id || c0.userid || '');
+        setSelectedKey(k0);
+      }
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadClients();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // --------------- derived data ---------------
+  const clientsWithKey = useMemo(() => {
+    return (clients || []).map((c) => {
+      const broker = c.broker || c.type || '';
+      const client_id = c.client_id || c.userid || c.user_id || c.clientCode || '';
+      return {
+        ...c,
+        _broker: broker,
+        _client_id: client_id,
+        _key: clientKey(broker, client_id),
+      };
+    });
+  }, [clients]);
+
+  const selectedClient = useMemo(() => {
+    return clientsWithKey.find((c) => c._key === selectedKey) || null;
+  }, [clientsWithKey, selectedKey]);
+
+  const brokerBadge = (b) => {
+    const s = String(b || '').toLowerCase();
+    if (s.includes('dhan')) return <Badge bg="primary">Dhan</Badge>;
+    if (s.includes('motilal') || s.includes('mofsl')) return <Badge bg="warning" text="dark">Motilal</Badge>;
+    return <Badge bg="secondary">{b || 'Unknown'}</Badge>;
+  };
+
+  const resetAddForm = (broker = addBroker) => {
+    setAddBroker(broker);
+    setAddForm({
+      name: '',
+      client_id: '',
+      capital: '',
+      apikey: '',
+      password: '',
+      pan: '',
+      mpin: '',
+      totp: '',
+    });
+  };
+
+  // --------------- actions ---------------
+  const openAdd = () => {
+    resetAddForm(addBroker);
+    setShowAdd(true);
+    setErr('');
+    setInfo('');
+  };
+
+  const closeAdd = () => {
+    setShowAdd(false);
+  };
+
+  const submitAdd = async (e) => {
+    e.preventDefault();
+    setErr('');
+    setInfo('');
+
+    if (!API_BASE) {
+      setErr('Missing API base URL. Set NEXT_PUBLIC_API_BASE.');
+      return;
+    }
+
+    const broker = String(addBroker || '').trim().toLowerCase();
+
+    const client_id = capStr(addForm.client_id);
+    if (!client_id) {
+      setErr('Client ID is required.');
+      return;
+    }
+
+    // Broker-aware validations
+    if (broker === 'dhan') {
+      if (!capStr(addForm.apikey)) {
+        setErr('Access Token is required for Dhan.');
+        return;
+      }
+    }
+    if (broker === 'motilal') {
+      if (!capStr(addForm.password)) {
+        setErr('Password is required for Motilal.');
+        return;
+      }
+      // PAN optional, API key optional, TOTP optional
+    }
+
+    const payload = {
+      broker,
+      client_id,
+      display_name: capStr(addForm.name),
+      capital: addForm.capital ? toNum(addForm.capital) : undefined,
+      creds:
+        broker === 'dhan'
+          ? { type: 'dhan', access_token: capStr(addForm.apikey) }
+          : {
+              type: 'motilal',
+              client_code: client_id,
+              password: capStr(addForm.password),
+              mpin: capStr(addForm.mpin) || capStr(addForm.totp), // allow mpin/totp
+              pan: capStr(addForm.pan) || undefined,
+            },
+    };
+
+    setLoading(true);
+    try {
+      const out = await fetchJson(`${API_BASE}/add_client`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': uid },
         body: JSON.stringify(payload),
       });
-      ok = r.ok;
-    } catch {}
-    if (!ok) {
-      if (editGroupMode) {
-        const k = payload.id ?? groupForm.name;
-        const next = groups.map((g) => (groupKey(g) === k ? { ...payload } : g));
-        await saveGroupsLocally(next);
-      } else {
-        const tid = `g_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        const newG = {
-          id: tid,
-          name: payload.name,
-          multiplier: payload.multiplier,
-          members: payload.members,
-        };
-        await saveGroupsLocally([newG, ...groups]);
-      }
-    } else {
-      await loadGroups();
+
+      setInfo(out?.message || 'Client added. Backend will attempt login, then clients list will refresh.');
+      setShowAdd(false);
+      await loadClients();
+      setSelectedKey(clientKey(broker, client_id));
+    } catch (e2) {
+      setErr(String(e2.message || e2));
+    } finally {
+      setLoading(false);
     }
-    setShowGroupModal(false);
-    setEditGroupMode(false);
   };
 
-  const openCopyModal = () => {
-    const rows = {};
-    clients.forEach((c) => {
-      rows[keyOf(c)] = { selected: false, mult: '1' };
+  // Groups (frontend-only)
+  const addGroup = () => {
+    const name = capStr(newGroupName);
+    if (!name) return;
+    if (groups.some((g) => g.name.toLowerCase() === name.toLowerCase())) {
+      setErr('Group already exists.');
+      return;
+    }
+    setErr('');
+    setGroups([...groups, { name, created_at: nowIso() }]);
+    setNewGroupName('');
+  };
+
+  const deleteGroup = (name) => {
+    setGroups(groups.filter((g) => g.name !== name));
+  };
+
+  // Copy setups (frontend-only)
+  const openCopy = () => {
+    setCopyForm({
+      name: '',
+      leader: selectedKey || '',
+      followers: [],
+      mode: 'mirror',
+      multiplier: '1',
+      maxPerTrade: '',
+      created_at: '',
     });
-    setCopyForm({ name: '', master: '', rows });
     setShowCopyModal(true);
-  };
-  const onSubmitCopy = async (e) => {
-    e.preventDefault();
-    const name = (copyForm.name || '').trim();
-    const master = (copyForm.master || '').trim();
-    if (!name || !master) {
-      alert('Enter name & select master');
-      return;
-    }
-    const children = [];
-    const multipliers = {};
-    for (const [k, v] of Object.entries(copyForm.rows || {})) {
-      if (!v?.selected) continue;
-      const [, id] = k.split('::');
-      if (!id || id === master) continue;
-      children.push(id);
-      const m = parseFloat(v.mult);
-      multipliers[id] = !isFinite(m) || m <= 0 ? 1 : m;
-    }
-    if (children.length === 0) {
-      alert('Select at least one Child.');
-      return;
-    }
-    const body = {
-      name,
-      setup_name: name,
-      master,
-      master_account: master,
-      children,
-      child_accounts: children,
-      multipliers,
-      enabled: false,
-    };
-    try {
-      const r = await fetch(`${API_BASE}/save_copytrading_setup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': uid },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) {
-        alert(`Error saving: ${r.status}`);
-        return;
-      }
-      setShowCopyModal(false);
-    } catch {
-      alert('Network error');
-    }
+    setErr('');
+    setInfo('');
   };
 
-  // Render component
+  const closeCopy = () => setShowCopyModal(false);
+
+  const toggleFollower = (k) => {
+    setCopyForm((p) => {
+      const has = p.followers.includes(k);
+      const next = has ? p.followers.filter((x) => x !== k) : [...p.followers, k];
+      return { ...p, followers: next };
+    });
+  };
+
+  const submitCopy = (e) => {
+    e.preventDefault();
+    setErr('');
+    setInfo('');
+
+    const name = capStr(copyForm.name);
+    if (!name) {
+      setErr('Setup name is required.');
+      return;
+    }
+    if (!capStr(copyForm.leader)) {
+      setErr('Leader client is required.');
+      return;
+    }
+    if (!copyForm.followers || copyForm.followers.length === 0) {
+      setErr('Select at least one follower.');
+      return;
+    }
+
+    const item = {
+      id: `copy_${Date.now()}`,
+      name,
+      leader: copyForm.leader,
+      followers: copyForm.followers,
+      mode: capStr(copyForm.mode) || 'mirror',
+      multiplier: toNum(copyForm.multiplier || 1),
+      maxPerTrade: copyForm.maxPerTrade ? toNum(copyForm.maxPerTrade) : undefined,
+      created_at: nowIso(),
+    };
+
+    setCopySetups((prev) => [item, ...prev]);
+    setShowCopyModal(false);
+    setInfo('Copy setup created (frontend-only).');
+  };
+
+  const deleteCopySetup = (id) => setCopySetups((prev) => prev.filter((x) => x.id !== id));
+
+  // --------------- UI ---------------
   return (
     <Card className="p-3">
-      {/* Toolbar */}
-      <div className="d-flex mb-3" style={{ gap: 10 }}>
-        {subtab === 'clients' ? (
-          <>
-            <Form.Control
-              size="sm"
-              style={{ maxWidth: 220 }}
-              placeholder="Logged-in User ID"
-              value={userId}
-              onChange={(e) => saveUserId(e.target.value)}
-            />
-            <Button variant="success" onClick={openAdd}>Add Client</Button>
-            <Button
-              variant="secondary"
-              disabled={selectedClients.size !== 1}
-              onClick={openEdit}
-            >
-              Edit
-            </Button>
-            <Button
-              variant="danger"
-              disabled={selectedClients.size === 0}
-              onClick={onDelete}
-            >
-              Delete
-            </Button>
-          </>
+      <div className="d-flex align-items-center justify-content-between mb-3">
+        <div>
+          <h4 className="mb-1">Clients</h4>
+          <div className="text-muted" style={{ fontSize: 13 }}>
+            {API_BASE ? (
+              <span>API: <code>{API_BASE}</code></span>
+            ) : (
+              <span className="text-danger">API base missing: set <code>NEXT_PUBLIC_API_BASE</code></span>
+            )}
+          </div>
+        </div>
+
+        <div className="d-flex gap-2">
+          <Button variant="outline-secondary" onClick={loadClients} disabled={loading}>
+            Refresh
+          </Button>
+          <Button variant="primary" onClick={openAdd}>
+            + Add Client
+          </Button>
+        </div>
+      </div>
+
+      {err ? (
+        <div className="mb-3">
+          <Badge bg="danger">Error</Badge>
+          <div className="mt-2" style={{ whiteSpace: 'pre-wrap' }}>{err}</div>
+        </div>
+      ) : null}
+
+      {info ? (
+        <div className="mb-3">
+          <Badge bg="success">Info</Badge>
+          <div className="mt-2" style={{ whiteSpace: 'pre-wrap' }}>{info}</div>
+        </div>
+      ) : null}
+
+      {/* Clients table */}
+      <Table bordered hover responsive size="sm">
+        <thead>
+          <tr>
+            <th style={{ width: 70 }}>Select</th>
+            <th style={{ width: 120 }}>Broker</th>
+            <th>Client ID</th>
+            <th>Name</th>
+            <th style={{ width: 120 }}>Capital</th>
+            <th style={{ width: 120 }}>Session</th>
+          </tr>
+        </thead>
+        <tbody>
+          {clientsWithKey.length === 0 ? (
+            <tr>
+              <td colSpan={6} className="text-center text-muted">
+                {loading ? 'Loading…' : 'No clients found.'}
+              </td>
+            </tr>
+          ) : (
+            clientsWithKey.map((c) => (
+              <tr key={c._key}>
+                <td className="text-center">
+                  <Form.Check
+                    type="radio"
+                    name="clientSelect"
+                    checked={selectedKey === c._key}
+                    onChange={() => setSelectedKey(c._key)}
+                  />
+                </td>
+                <td>{brokerBadge(c._broker)}</td>
+                <td>
+                  <code>{c._client_id}</code>
+                </td>
+                <td>{c.name || c.display_name || '-'}</td>
+                <td>{c.capital ?? c.balance ?? '-'}</td>
+                <td>
+                  {c.session_active ? (
+                    <Badge bg="success">Active</Badge>
+                  ) : (
+                    <Badge bg="secondary">Off</Badge>
+                  )}
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </Table>
+
+      {/* Selected client details */}
+      <div className="mt-3">
+        <h5 className="mb-2">Selected</h5>
+        {selectedClient ? (
+          <div className="p-2 border rounded">
+            <div className="d-flex align-items-center justify-content-between">
+              <div>
+                <div className="mb-1">
+                  {brokerBadge(selectedClient._broker)}{' '}
+                  <span className="ms-2">
+                    <strong>{selectedClient.name || selectedClient.display_name || '—'}</strong>
+                  </span>
+                </div>
+                <div className="text-muted" style={{ fontSize: 13 }}>
+                  Client: <code>{selectedClient._client_id}</code> | Key: <code>{selectedClient._key}</code>
+                </div>
+              </div>
+              <div className="d-flex gap-2">
+                <Button variant="outline-primary" onClick={openCopy} disabled={!selectedKey}>
+                  + Copy Setup
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-2" style={{ fontSize: 13 }}>
+              <div><strong>Capital:</strong> {selectedClient.capital ?? '—'}</div>
+              <div><strong>Created:</strong> {selectedClient.created_at || '—'}</div>
+              <div><strong>Last login:</strong> {selectedClient.last_login_ts || '—'}</div>
+            </div>
+          </div>
         ) : (
-          <>
-            <Button variant="success" onClick={openCreateGroup}>Create Group</Button>
-            <Button
-              variant="secondary"
-              disabled={selectedGroups.size !== 1}
-              onClick={openEditGroup}
-            >
-              Edit Group
-            </Button>
-            <Button
-              variant="danger"
-              disabled={selectedGroups.size === 0}
-              onClick={onDeleteGroup}
-            >
-              Delete Group
-            </Button>
-            <Button variant="primary" onClick={openCopyModal}>Copy Setup</Button>
-          </>
+          <div className="text-muted">Select a client above.</div>
         )}
       </div>
-      {/* Tabs */}
-      <ButtonGroup className="mb-3">
-        <Button
-          variant={subtab === 'clients' ? 'primary' : 'outline-primary'}
-          onClick={() => setSubtab('clients')}
-        >
-          Clients
-        </Button>
-        <Button
-          variant={subtab === 'groups' ? 'primary' : 'outline-primary'}
-          onClick={() => setSubtab('groups')}
-        >
-          Groups
-        </Button>
-      </ButtonGroup>
-      {/* Clients Table */}
-      {subtab === 'clients' && (
-        <>
-          <Table bordered hover responsive size="sm" className="align-middle">
+
+      {/* Groups (frontend-only) */}
+      <div className="mt-4">
+        <h5 className="mb-2">Groups (frontend-only)</h5>
+        <div className="d-flex gap-2 mb-2">
+          <Form.Control
+            placeholder="New group name"
+            value={newGroupName}
+            onChange={(e) => setNewGroupName(e.target.value)}
+          />
+          <Button variant="outline-success" onClick={addGroup}>
+            Add
+          </Button>
+        </div>
+
+        {groups.length === 0 ? (
+          <div className="text-muted">No groups yet.</div>
+        ) : (
+          <Table bordered size="sm" responsive>
             <thead>
               <tr>
-                <th style={{ width: '1%' }}>
-                  <Form.Check
-                    type="checkbox"
-                    checked={selectedClients.size === clients.length && clients.length > 0}
-                    onChange={(e) => toggleAllClients(e.target.checked)}
-                  />
-                </th>
-                <th>Name</th>
-                <th>Broker</th>
-                <th>Status</th>
+                <th>Group</th>
+                <th style={{ width: 180 }}>Created</th>
+                <th style={{ width: 120 }}>Action</th>
               </tr>
             </thead>
             <tbody>
-              {clients.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="text-center">No clients yet.</td>
+              {groups.map((g) => (
+                <tr key={g.name}>
+                  <td>{g.name}</td>
+                  <td className="text-muted" style={{ fontSize: 13 }}>
+                    {g.created_at}
+                  </td>
+                  <td>
+                    <Button size="sm" variant="outline-danger" onClick={() => deleteGroup(g.name)}>
+                      Delete
+                    </Button>
+                  </td>
                 </tr>
-              )}
-              {clients.map((c) => {
-                const k = keyOf(c);
-                return (
-                  <tr key={k}>
-                    <td>
-                      <Form.Check
-                        type="checkbox"
-                        checked={selectedClients.has(k)}
-                        onChange={(e) => toggleOneClient(k, e.target.checked)}
-                      />
-                    </td>
-                    <td>{c.name || c.display_name || c.userid || c.client_id}</td>
-                    <td>{c.broker || ''}</td>
-                    <td>{statusBadge(c)}</td>
-                  </tr>
-                );
-              })}
+              ))}
             </tbody>
           </Table>
-        </>
-      )}
-      {/* Groups Table */}
-      {subtab === 'groups' && (
-        <>
-          <Table bordered hover responsive size="sm" className="align-middle">
+        )}
+      </div>
+
+      {/* Copy Trading setups (frontend-only) */}
+      <div className="mt-4">
+        <h5 className="mb-2">Copy Trading Setups (frontend-only)</h5>
+        {copySetups.length === 0 ? (
+          <div className="text-muted">No copy setups yet.</div>
+        ) : (
+          <Table bordered size="sm" responsive>
             <thead>
               <tr>
-                <th style={{ width: '1%' }}>
-                  <Form.Check
-                    type="checkbox"
-                    checked={selectedGroups.size === groups.length && groups.length > 0}
-                    onChange={(e) => toggleAllGroups(e.target.checked)}
-                  />
-                </th>
                 <th>Name</th>
-                <th>Multiplier</th>
-                <th>Members</th>
+                <th>Leader</th>
+                <th>Followers</th>
+                <th style={{ width: 120 }}>Mode</th>
+                <th style={{ width: 120 }}>Multiplier</th>
+                <th style={{ width: 160 }}>Created</th>
+                <th style={{ width: 120 }}>Action</th>
               </tr>
             </thead>
             <tbody>
-              {groups.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="text-center">No groups yet.</td>
+              {copySetups.map((s) => (
+                <tr key={s.id}>
+                  <td><strong>{s.name}</strong></td>
+                  <td><code>{s.leader}</code></td>
+                  <td>
+                    <div style={{ fontSize: 12 }}>
+                      {(s.followers || []).map((f) => (
+                        <Badge key={f} bg="secondary" className="me-1">{f}</Badge>
+                      ))}
+                    </div>
+                  </td>
+                  <td>{s.mode}</td>
+                  <td>{s.multiplier}</td>
+                  <td className="text-muted" style={{ fontSize: 12 }}>{s.created_at}</td>
+                  <td>
+                    <Button size="sm" variant="outline-danger" onClick={() => deleteCopySetup(s.id)}>
+                      Delete
+                    </Button>
+                  </td>
                 </tr>
-              )}
-              {groups.map((g) => {
-                const k = groupKey(g);
-                return (
-                  <tr key={k}>
-                    <td>
-                      <Form.Check
-                        type="checkbox"
-                        checked={selectedGroups.has(k)}
-                        onChange={(e) => toggleOneGroup(k, e.target.checked)}
-                      />
-                    </td>
-                    <td>{g.name}</td>
-                    <td>{g.multiplier}</td>
-                    <td>
-                      {(g.members || [])
-                        .map((m) => `${(m.broker || '').toUpperCase()}:${m.userid || m.client_id}`)
-                        .join(', ')}
-                    </td>
-                  </tr>
-                );
-              })}
+              ))}
             </tbody>
           </Table>
-        </>
-      )}
-      {/* Add/Edit Client Modal */}
-      <Modal show={showModal} onHide={() => { setShowModal(false); pollingAbortRef.current = true; }}>
-        <Form onSubmit={onSubmit}>
-          <Modal.Header closeButton>
-            <Modal.Title>{editMode ? 'Edit Client' : 'Add Client'}</Modal.Title>
-          </Modal.Header>
+        )}
+      </div>
+
+      {/* Add Client Modal */}
+      <Modal show={showAdd} onHide={closeAdd} centered>
+        <Modal.Header closeButton>
+          <Modal.Title>Add Client</Modal.Title>
+        </Modal.Header>
+
+        <Form onSubmit={submitAdd}>
           <Modal.Body>
-            <Form.Group className="mb-3">
+            <Form.Group className="mb-2">
               <Form.Label>Broker</Form.Label>
               <Form.Select
-                value={broker}
-                disabled={editMode}
+                value={addBroker}
                 onChange={(e) => {
-                  setBroker(e.target.value);
-                  setAddForm({ name: '', userid: '', mobile: '', pin: '', apikey: '', api_secret: '', totpkey: '', capital: '' });
+                  const b = e.target.value;
+                  resetAddForm(b);
                 }}
               >
                 <option value="dhan">Dhan</option>
-                {/* Motilal is now enabled */}
                 <option value="motilal">Motilal</option>
               </Form.Select>
             </Form.Group>
+
             <Form.Group className="mb-2">
-              <Form.Label>Name</Form.Label>
+              <Form.Label>Name (optional)</Form.Label>
               <Form.Control
                 value={addForm.name}
                 onChange={(e) => setAddForm((p) => ({ ...p, name: e.target.value }))}
+                placeholder="Display name"
               />
             </Form.Group>
+
             <Form.Group className="mb-2">
-              <Form.Label>Client ID *</Form.Label>
+              <Form.Label>Client ID (required)</Form.Label>
               <Form.Control
+                value={addForm.client_id}
+                onChange={(e) => setAddForm((p) => ({ ...p, client_id: e.target.value }))}
+                placeholder={addBroker === 'dhan' ? 'Dhan Client ID' : 'Motilal Client Code'}
                 required
-                disabled={editMode}
-                value={addForm.userid}
-                onChange={(e) => setAddForm((p) => ({ ...p, userid: e.target.value.trim() }))}
               />
             </Form.Group>
-            {/* Show Dhan fields or Motilal fields (identical layout) */}
-            {(broker === 'dhan' || broker === 'motilal') && (
+
+            <Form.Group className="mb-2">
+              <Form.Label>Capital (optional)</Form.Label>
+              <Form.Control
+                value={addForm.capital}
+                onChange={(e) => setAddForm((p) => ({ ...p, capital: e.target.value }))}
+                placeholder="e.g., 100000"
+              />
+            </Form.Group>
+
+            {addBroker === 'dhan' ? (
               <>
                 <Form.Group className="mb-2">
-                  <Form.Label>Mobile Number *</Form.Label>
+                  <Form.Label>Access Token (required)</Form.Label>
                   <Form.Control
-                    required={broker === 'dhan'}
-                    value={addForm.mobile}
-                    onChange={(e) => setAddForm((p) => ({ ...p, mobile: e.target.value.trim() }))}
-                    placeholder={broker === 'dhan' ? 'Registered Mobile' : 'Motilal API Key (unused)'}
-                  />
-                </Form.Group>
-                <Form.Group className="mb-2">
-                  <Form.Label>{broker === 'dhan' ? 'PIN *' : 'Password *'}</Form.Label>
-                  <Form.Control
-                    type="password"
-                    required
-                    value={addForm.pin}
-                    onChange={(e) => setAddForm((p) => ({ ...p, pin: e.target.value.trim() }))}
-                    placeholder={broker === 'dhan' ? 'Trading PIN' : 'Motilal Password'}
-                  />
-                </Form.Group>
-                <Form.Group className="mb-2">
-                  <Form.Label>{broker === 'dhan' ? 'API Key *' : 'API Key *'}</Form.Label>
-                  <Form.Control
-                    required
                     value={addForm.apikey}
-                    onChange={(e) => setAddForm((p) => ({ ...p, apikey: e.target.value.trim() }))}
-                    placeholder={broker === 'dhan' ? 'Dhan API Key' : 'Motilal API Key'}
-                  />
-                </Form.Group>
-                <Form.Group className="mb-2">
-                  <Form.Label>{broker === 'dhan' ? 'API Secret *' : 'PAN *'}</Form.Label>
-                  <Form.Control
-                    type="password"
+                    onChange={(e) => setAddForm((p) => ({ ...p, apikey: e.target.value }))}
+                    placeholder="Dhan access token"
                     required
-                    value={addForm.api_secret}
-                    onChange={(e) => setAddForm((p) => ({ ...p, api_secret: e.target.value.trim() }))}
-                    placeholder={broker === 'dhan' ? 'API Secret' : 'Motilal PAN'}
                   />
                 </Form.Group>
+              </>
+            ) : (
+              <>
                 <Form.Group className="mb-2">
-                  <Form.Label>TOTP Key {broker === 'dhan' ? '*' : '(optional)'}</Form.Label>
+                  <Form.Label>Password (required)</Form.Label>
                   <Form.Control
                     type="password"
-                    required={broker === 'dhan'}
-                    value={addForm.totpkey}
-                    onChange={(e) => setAddForm((p) => ({ ...p, totpkey: e.target.value.trim() }))}
-                    placeholder="Authenticator Secret Key"
+                    value={addForm.password}
+                    onChange={(e) => setAddForm((p) => ({ ...p, password: e.target.value }))}
+                    placeholder="Motilal password"
+                    required
                   />
-                  <Form.Text muted>Used for auto login OTP generation.</Form.Text>
+                </Form.Group>
+
+                <Form.Group className="mb-2">
+                  <Form.Label>PAN (optional)</Form.Label>
+                  <Form.Control
+                    value={addForm.pan}
+                    onChange={(e) => setAddForm((p) => ({ ...p, pan: e.target.value }))}
+                    placeholder="ABCDE1234F"
+                  />
+                </Form.Group>
+
+                <Form.Group className="mb-2">
+                  <Form.Label>MPIN / TOTP Key (optional)</Form.Label>
+                  <Form.Control
+                    value={addForm.mpin}
+                    onChange={(e) => setAddForm((p) => ({ ...p, mpin: e.target.value }))}
+                    placeholder="MPIN or TOTP secret"
+                  />
                 </Form.Group>
               </>
             )}
-            <Form.Group className="mb-2">
-              <Form.Label>Capital</Form.Label>
-              <Form.Control
-                type="number"
-                step="0.01"
-                min="0"
-                value={addForm.capital}
-                onChange={(e) => setAddForm((p) => ({ ...p, capital: e.target.value }))}
-                placeholder="e.g. 100000"
-              />
-            </Form.Group>
           </Modal.Body>
+
           <Modal.Footer>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setShowModal(false);
-                pollingAbortRef.current = true;
-              }}
-            >
+            <Button variant="secondary" onClick={closeAdd}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary">
-              {editMode ? 'Save & Login' : 'Save & Login'}
+            <Button type="submit" variant="primary" disabled={loading}>
+              {loading ? 'Saving…' : 'Add Client'}
             </Button>
           </Modal.Footer>
         </Form>
       </Modal>
-      {/* Group Modal */}
-      <Modal show={showGroupModal} onHide={() => setShowGroupModal(false)} size="lg">
-        <Form onSubmit={onSubmitGroup}>
-          <Modal.Header closeButton>
-            <Modal.Title>{editGroupMode ? 'Edit Group' : 'Create Group'}</Modal.Title>
-          </Modal.Header>
+
+      {/* Copy Setup Modal */}
+      <Modal show={showCopyModal} onHide={closeCopy} centered size="lg">
+        <Modal.Header closeButton>
+          <Modal.Title>Create Copy Setup</Modal.Title>
+        </Modal.Header>
+
+        <Form onSubmit={submitCopy}>
           <Modal.Body>
-            <Form.Group className="mb-3">
-              <Form.Label>Group Name</Form.Label>
-              <Form.Control
-                required
-                value={groupForm.name}
-                onChange={(e) => setGroupForm((p) => ({ ...p, name: e.target.value }))}
-              />
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Multiplier</Form.Label>
-              <Form.Control
-                type="number"
-                min="0"
-                step="0.01"
-                value={groupForm.multiplier}
-                onChange={(e) => setGroupForm((p) => ({ ...p, multiplier: e.target.value }))}
-              />
-            </Form.Group>
-            <div className="mb-3">
-              <Form.Label>Members</Form.Label>
-              <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
-                {clients.map((c) => {
-                  const k = keyOf(c);
-                  return (
-                    <Form.Check
-                      key={k}
-                      type="checkbox"
-                      label={`${(c.broker || '').toUpperCase()}:${c.userid || c.client_id}`}
-                      checked={groupForm.members[k] || false}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setGroupForm((prev) => {
-                          const next = { ...prev };
-                          next.members = { ...next.members, [k]: checked };
-                          return next;
-                        });
-                      }}
-                    />
-                  );
-                })}
+            <div className="row g-3">
+              <div className="col-md-6">
+                <Form.Group>
+                  <Form.Label>Setup Name</Form.Label>
+                  <Form.Control
+                    value={copyForm.name}
+                    onChange={(e) => setCopyForm((p) => ({ ...p, name: e.target.value }))}
+                    placeholder="e.g., Renko Dwaitha Mirror"
+                  />
+                </Form.Group>
               </div>
-            </div>
-          </Modal.Body>
-          <Modal.Footer>
-            <Button variant="secondary" onClick={() => setShowGroupModal(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary">
-              {editGroupMode ? 'Save Group' : 'Create Group'}
-            </Button>
-          </Modal.Footer>
-        </Form>
-      </Modal>
-      {/* Copy Trading Modal */}
-      <Modal show={showCopyModal} onHide={() => setShowCopyModal(false)} size="lg">
-        <Form onSubmit={onSubmitCopy}>
-          <Modal.Header closeButton>
-            <Modal.Title>Create Copy Trading Setup</Modal.Title>
-          </Modal.Header>
-          <Modal.Body>
-            <Form.Group className="mb-3">
-              <Form.Label>Setup Name</Form.Label>
-              <Form.Control
-                required
-                value={copyForm.name}
-                onChange={(e) => setCopyForm((p) => ({ ...p, name: e.target.value }))}
-              />
-            </Form.Group>
-            <Form.Group className="mb-3">
-              <Form.Label>Master Account</Form.Label>
-              <Form.Select
-                value={copyForm.master}
-                onChange={(e) => setCopyForm((p) => ({ ...p, master: e.target.value }))}
-              >
-                <option value="">Select Master</option>
-                {clients.map((c) => {
-                  const k = keyOf(c);
-                  return (
-                    <option key={k} value={c.userid || c.client_id}>
-                      {(c.broker || '').toUpperCase()}:{c.userid || c.client_id}
-                    </option>
-                  );
-                })}
-              </Form.Select>
-            </Form.Group>
-            <div className="mb-3">
-              <Form.Label>Child Accounts</Form.Label>
-              <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
-                {clients.map((c) => {
-                  const k = keyOf(c);
-                  const row = copyForm.rows[k] || { selected: false, mult: '1' };
-                  return (
-                    <div key={k} className="d-flex align-items-center mb-1" style={{ gap: '5px' }}>
-                      <Form.Check
-                        type="checkbox"
-                        checked={row.selected}
-                        onChange={(e) => {
-                          const selected = e.target.checked;
-                          setCopyForm((prev) => {
-                            const next = { ...prev };
-                            next.rows = { ...next.rows, [k]: { ...row, selected } };
-                            return next;
-                          });
-                        }}
-                      />
-                      <span style={{ flex: 1 }}>
-                        {(c.broker || '').toUpperCase()}:{c.userid || c.client_id}
-                      </span>
-                      <Form.Control
-                        style={{ width: '80px' }}
-                        type="number"
-                        step="0.01"
-                        min="0.01"
-                        value={row.mult}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setCopyForm((prev) => {
-                            const next = { ...prev };
-                            next.rows = { ...next.rows, [k]: { ...row, mult: val } };
-                            return next;
-                          });
-                        }}
-                        disabled={!row.selected}
-                      />
-                    </div>
-                  );
-                })}
+
+              <div className="col-md-6">
+                <Form.Group>
+                  <Form.Label>Leader</Form.Label>
+                  <Form.Select
+                    value={copyForm.leader}
+                    onChange={(e) => setCopyForm((p) => ({ ...p, leader: e.target.value }))}
+                  >
+                    <option value="">Select leader</option>
+                    {clientsWithKey.map((c) => (
+                      <option key={c._key} value={c._key}>
+                        {c._key}
+                      </option>
+                    ))}
+                  </Form.Select>
+                </Form.Group>
+              </div>
+
+              <div className="col-md-6">
+                <Form.Group>
+                  <Form.Label>Mode</Form.Label>
+                  <Form.Select
+                    value={copyForm.mode}
+                    onChange={(e) => setCopyForm((p) => ({ ...p, mode: e.target.value }))}
+                  >
+                    <option value="mirror">Mirror</option>
+                    <option value="inverse">Inverse</option>
+                    <option value="signals">Signals only</option>
+                  </Form.Select>
+                </Form.Group>
+              </div>
+
+              <div className="col-md-3">
+                <Form.Group>
+                  <Form.Label>Multiplier</Form.Label>
+                  <Form.Control
+                    value={copyForm.multiplier}
+                    onChange={(e) => setCopyForm((p) => ({ ...p, multiplier: e.target.value }))}
+                    placeholder="1"
+                  />
+                </Form.Group>
+              </div>
+
+              <div className="col-md-3">
+                <Form.Group>
+                  <Form.Label>Max/Trade (optional)</Form.Label>
+                  <Form.Control
+                    value={copyForm.maxPerTrade}
+                    onChange={(e) => setCopyForm((p) => ({ ...p, maxPerTrade: e.target.value }))}
+                    placeholder="e.g., 5000"
+                  />
+                </Form.Group>
+              </div>
+
+              <div className="col-12">
+                <Form.Group>
+                  <Form.Label>Followers</Form.Label>
+                  <div className="d-flex flex-wrap gap-2">
+                    {clientsWithKey
+                      .filter((c) => c._key !== copyForm.leader)
+                      .map((c) => {
+                        const checked = copyForm.followers.includes(c._key);
+                        return (
+                          <Button
+                            key={c._key}
+                            size="sm"
+                            variant={checked ? 'success' : 'outline-secondary'}
+                            onClick={() => toggleFollower(c._key)}
+                            type="button"
+                          >
+                            {checked ? '✓ ' : ''}{c._key}
+                          </Button>
+                        );
+                      })}
+                  </div>
+                </Form.Group>
+              </div>
+
+              <div className="col-12">
+                <div className="text-muted" style={{ fontSize: 12 }}>
+                  This setup is stored in browser localStorage (frontend-only). Hook it to backend later if needed.
+                </div>
               </div>
             </div>
           </Modal.Body>
