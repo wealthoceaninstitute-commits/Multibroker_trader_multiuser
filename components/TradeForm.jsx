@@ -1,4 +1,5 @@
 // components/TradeForm.jsx — multi-user safe: fetch logged-in user's clients/groups (UI unchanged)
+
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
