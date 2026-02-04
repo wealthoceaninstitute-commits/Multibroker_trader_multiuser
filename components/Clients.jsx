@@ -3,25 +3,24 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { Card, Button, Modal, Form, Table, Badge, ButtonGroup } from "react-bootstrap";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:5001";
+// ✅ DO NOT default to localhost on Vercel
+const DEFAULT_RENDER_API = "https://multibroker-trader-multiuser-render.onrender.com";
+const API_BASE =
+  (process.env.NEXT_PUBLIC_API_BASE && process.env.NEXT_PUBLIC_API_BASE.trim()) ||
+  DEFAULT_RENDER_API;
 
 // ----- helpers -----
 const LS_KEY_GROUPS = "mb_groups_v2_groupMultiplier";
 const LS_KEY_USERID = "mb_logged_in_userid_v1";
 
-// --------- robust user detection ---------
-// 1) Prefer the visible navbar text: "Welcome, <user>"
-// 2) Fallback to localStorage if navbar not available
+// 1) Prefer navbar "Welcome, <user>"
 const detectUserFromWelcomeText = () => {
   if (typeof window === "undefined") return "";
-
   try {
-    // Fast path: scan body text for "Welcome, xyz"
     const txt = document.body?.innerText || "";
     const m = txt.match(/Welcome,\s*([^\s]+)/i);
     if (m && m[1]) return String(m[1]).trim();
   } catch {}
-
   return "";
 };
 
@@ -47,6 +46,35 @@ const safeJson = async (r) => {
   }
 };
 
+// POST helper: try multiple endpoints until one is not 404
+async function postWithFallback(paths, body, headers) {
+  let last = null;
+
+  for (const p of paths) {
+    try {
+      const r = await fetch(`${API_BASE}${p}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      const text = await r.text().catch(() => "");
+
+      // If route not found, try next
+      if (r.status === 404) {
+        last = { path: p, status: r.status, ok: r.ok, text };
+        continue;
+      }
+
+      return { path: p, status: r.status, ok: r.ok, text };
+    } catch (e) {
+      last = { path: p, status: -1, ok: false, text: String(e?.message || e) };
+    }
+  }
+
+  return last || { path: paths?.[0] || "", status: -1, ok: false, text: "No endpoint matched" };
+}
+
 export default function Clients() {
   const [clients, setClients] = useState([]);
   const [selectedClients, setSelectedClients] = useState(new Set());
@@ -71,9 +99,13 @@ export default function Clients() {
   const [loggingNow, setLoggingNow] = useState(new Set());
   const pollingAbortRef = useRef(false);
 
-  // UI unchanged: still shows the input, but we auto-fill correctly.
+  // Groups
+  const [groups, setGroups] = useState([]);
+  const [selectedGroups, setSelectedGroups] = useState(new Set());
+
+  // UI unchanged: input exists but auto-fills
   const [userId, setUserId] = useState("");
-  const userTouchedRef = useRef(false); // if user manually edits, don't fight them
+  const userTouchedRef = useRef(false);
 
   const setUserIdFromSession = (next) => {
     const v = String(next || "").trim();
@@ -81,62 +113,6 @@ export default function Clients() {
     setUserId(v);
     writeLS(LS_KEY_USERID, v);
   };
-
-  // ---- 1) On mount, set userId from Welcome text (authoritative) ----
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const welcome = detectUserFromWelcomeText();
-    if (welcome) {
-      setUserIdFromSession(welcome);
-      return;
-    }
-
-    // fallback to LS only if Welcome isn't detected yet
-    const ls = (readLSRaw(LS_KEY_USERID) || "").trim();
-    if (ls) setUserId(ls);
-
-    // Then keep trying for a few seconds because UI hydration may be late
-    let tries = 0;
-    const t = setInterval(() => {
-      tries += 1;
-      const w = detectUserFromWelcomeText();
-      if (w) {
-        // If user did NOT manually type, always trust welcome text
-        if (!userTouchedRef.current) setUserIdFromSession(w);
-        clearInterval(t);
-      }
-      if (tries >= 16) clearInterval(t); // ~8s
-    }, 500);
-
-    return () => clearInterval(t);
-  }, []);
-
-  // ---- 2) Keep watching for changes (when user logs out/in or user changes) ----
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const applyWelcome = () => {
-      const w = detectUserFromWelcomeText();
-      if (!w) return;
-      // Always override stale "pra" with actual logged-in user
-      // unless user manually typed in this session.
-      if (!userTouchedRef.current) {
-        if (w !== userId) setUserIdFromSession(w);
-      }
-    };
-
-    // MutationObserver catches navbar updates without polling forever
-    const obs = new MutationObserver(() => applyWelcome());
-    try {
-      obs.observe(document.body, { childList: true, subtree: true, characterData: true });
-    } catch {}
-
-    // also do one immediate check
-    applyWelcome();
-
-    return () => obs.disconnect();
-  }, [userId]);
 
   const saveUserId = (v) => {
     userTouchedRef.current = true;
@@ -146,7 +122,6 @@ export default function Clients() {
   };
 
   const getUid = () => {
-    // Always prefer Welcome username if available
     const w = detectUserFromWelcomeText();
     if (w) {
       if (!userTouchedRef.current && w !== userId) setUserIdFromSession(w);
@@ -155,21 +130,80 @@ export default function Clients() {
     return (userId || "").trim();
   };
 
-  // Load clients and groups
+  // ---- On mount: take real login user from "Welcome, ..." or fallback LS ----
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const welcome = detectUserFromWelcomeText();
+    if (welcome) {
+      setUserIdFromSession(welcome);
+    } else {
+      const ls = (readLSRaw(LS_KEY_USERID) || "").trim();
+      if (ls) setUserId(ls);
+    }
+
+    // Keep watching for login change (user switch)
+    const applyWelcome = () => {
+      const w = detectUserFromWelcomeText();
+      if (!w) return;
+      if (!userTouchedRef.current && w !== userId) setUserIdFromSession(w);
+    };
+
+    const obs = new MutationObserver(() => applyWelcome());
+    try {
+      obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+    } catch {}
+
+    // small delayed retries (hydration timing)
+    let tries = 0;
+    const t = setInterval(() => {
+      tries += 1;
+      applyWelcome();
+      if (tries >= 12) clearInterval(t);
+    }, 500);
+
+    return () => {
+      obs.disconnect();
+      clearInterval(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ---------- robust clients fetch ----------
+  async function fetchClientsFor(uid) {
+    const headers = uid ? { "x-user-id": uid } : undefined;
+
+    const urls = [
+      `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`,
+      `${API_BASE}/clients?userid=${encodeURIComponent(uid)}`,
+      `${API_BASE}/clients`,
+    ];
+
+    let lastArr = null;
+
+    for (const url of urls) {
+      try {
+        const r = await fetch(url, { cache: "no-store", headers });
+        if (!r.ok) continue;
+        const j = await safeJson(r);
+
+        const arr = Array.isArray(j) ? j : j?.clients || [];
+        if (Array.isArray(arr) && arr.length > 0) return arr;
+        if (Array.isArray(arr)) lastArr = arr;
+      } catch {}
+    }
+
+    return lastArr ?? [];
+  }
+
   async function loadClients() {
     const uid = getUid();
     if (!uid) {
       setClients([]);
       return;
     }
-    try {
-      const url = `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`;
-      const r = await fetch(url, { cache: "no-store", headers: { "x-user-id": uid } });
-      const j = await safeJson(r);
-      setClients(Array.isArray(j) ? j : j?.clients || []);
-    } catch {
-      setClients([]);
-    }
+    const list = await fetchClientsFor(uid);
+    setClients(list);
   }
 
   async function loadGroups() {
@@ -199,33 +233,12 @@ export default function Clients() {
     }
   }
 
-  // Groups
-  const [groups, setGroups] = useState([]);
-  const [selectedGroups, setSelectedGroups] = useState(new Set());
-  const [showGroupModal, setShowGroupModal] = useState(false);
-  const [editGroupMode, setEditGroupMode] = useState(false);
-
-  const [groupForm, setGroupForm] = useState({
-    id: null,
-    name: "",
-    multiplier: "1",
-    members: {},
-  });
-
-  const [showCopyModal, setShowCopyModal] = useState(false);
-  const [copyForm, setCopyForm] = useState({
-    name: "",
-    master: "",
-    rows: {},
-  });
-
   useEffect(() => {
     loadGroups();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    // when session user changes, auto-load that user's clients
     loadClients();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
@@ -241,7 +254,6 @@ export default function Clients() {
       return s;
     });
 
-  // Group helpers
   const groupKey = (g) => g.id || g.name;
   const allGroupKeys = useMemo(() => groups.map(groupKey), [groups]);
   const toggleAllGroups = (ch) => setSelectedGroups(ch ? new Set(allGroupKeys) : new Set());
@@ -262,14 +274,29 @@ export default function Clients() {
         ? "logged_out"
         : c.status || "pending";
     const v =
-      s === "logged_in" ? "success" : s === "logged_out" ? "secondary" : s === "failed" ? "danger" : "warning";
+      s === "logged_in"
+        ? "success"
+        : s === "logged_out"
+        ? "secondary"
+        : s === "failed"
+        ? "danger"
+        : "warning";
     return <Badge bg={v}>{s}</Badge>;
   };
 
   const openAdd = () => {
     setEditMode(false);
     setBroker("dhan");
-    setAddForm({ name: "", userid: "", mobile: "", pin: "", apikey: "", api_secret: "", totpkey: "", capital: "" });
+    setAddForm({
+      name: "",
+      userid: "",
+      mobile: "",
+      pin: "",
+      apikey: "",
+      api_secret: "",
+      totpkey: "",
+      capital: "",
+    });
     setEditingKey({ broker: null, userid: null });
     setShowModal(true);
   };
@@ -279,9 +306,11 @@ export default function Clients() {
     const k = [...selectedClients][0];
     const row = clients.find((c) => keyOf(c) === k);
     if (!row) return;
+
     setEditMode(true);
     const b = (row.broker || "").toLowerCase();
     setBroker(b);
+
     setAddForm({
       name: row.name || row.display_name || "",
       userid: row.userid || row.client_id || "",
@@ -292,10 +321,12 @@ export default function Clients() {
       totpkey: row.totpkey || "",
       capital: row.capital?.toString?.() || "",
     });
+
     setEditingKey({ broker: b, userid: row.userid || row.client_id || "" });
     setShowModal(true);
   };
 
+  // ✅ DELETE with fallback endpoints + good error reporting
   const onDelete = async () => {
     if (!selectedClients.size) return;
     if (!confirm(`Delete ${selectedClients.size} client(s)?`)) return;
@@ -313,15 +344,36 @@ export default function Clients() {
       })
       .filter((x) => x && x.broker && x.userid);
 
-    try {
-      await fetch(`${API_BASE}/delete_client`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-id": uid },
-        body: JSON.stringify({ user_id: uid, items }),
-      });
-      await loadClients();
-    } catch {}
+    const payload = { user_id: uid, items };
+    const headers = { "Content-Type": "application/json", "x-user-id": uid };
+
+    // Try likely backend route names (one of these usually exists)
+    const candidates = [
+      "/delete_client",
+      "/delete_clients",
+      "/clients/delete",
+      "/remove_client",
+      "/client/delete",
+    ];
+
+    const res = await postWithFallback(candidates, payload, headers);
+
+    if (!res || res.status === 404) {
+      alert(
+        "Backend has no delete route (404).\n\nTried:\n" +
+          candidates.join("\n") +
+          "\n\nFix backend by adding POST /delete_client or update frontend to correct route."
+      );
+      return;
+    }
+
+    if (!res.ok) {
+      alert(`Delete failed (${res.status}) via ${res.path}\n${res.text || ""}`);
+      return;
+    }
+
     setSelectedClients(new Set());
+    await loadClients();
   };
 
   async function pollUntilLoggedIn(broker, userid, { intervalMs = 1000, maxTries = 15 } = {}) {
@@ -333,12 +385,7 @@ export default function Clients() {
     let tries = 0;
     while (!pollingAbortRef.current && tries < maxTries) {
       try {
-        const r = await fetch(`${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`, {
-          cache: "no-store",
-          headers: uid ? { "x-user-id": uid } : undefined,
-        });
-        const j = await safeJson(r);
-        const list = Array.isArray(j) ? j : j?.clients || [];
+        const list = await fetchClientsFor(uid);
         const hit = list.find(
           (c) => (c.broker || "").toLowerCase() === broker && (c.userid || c.client_id || "") === userid
         );
@@ -384,21 +431,8 @@ export default function Clients() {
 
     const creds =
       broker === "dhan"
-        ? {
-            mobile: addForm.mobile,
-            pin: addForm.pin,
-            apikey: addForm.apikey,
-            api_secret: addForm.api_secret,
-            totpkey: addForm.totpkey,
-          }
-        : broker === "motilal"
-        ? {
-            apikey: addForm.apikey,
-            password: addForm.pin,
-            pan: addForm.api_secret,
-            totpkey: addForm.totpkey,
-          }
-        : {};
+        ? { mobile: addForm.mobile, pin: addForm.pin, apikey: addForm.apikey, api_secret: addForm.api_secret, totpkey: addForm.totpkey }
+        : { apikey: addForm.apikey, password: addForm.pin, pan: addForm.api_secret, totpkey: addForm.totpkey };
 
     const bodyBase = {
       broker,
@@ -411,7 +445,6 @@ export default function Clients() {
     };
 
     if (editMode && editingKey.userid) {
-      bodyBase._original = { broker: editingKey.broker, userid: editingKey.userid };
       bodyBase.original_broker = editingKey.broker;
       bodyBase.original_userid = editingKey.userid;
     }
@@ -433,183 +466,9 @@ export default function Clients() {
       const id = editMode ? editingKey.userid : addForm.userid;
       if (b && id) pollUntilLoggedIn(b, id);
 
-      if (!r.ok) {
-        console.warn(`/${endpoint} failed`, await r.text().catch(() => ""));
-      }
+      if (!r.ok) console.warn(`/${endpoint} failed`, await r.text().catch(() => ""));
     } catch {
       setShowModal(false);
-    }
-  };
-
-  const membersArrayFromForm = () => {
-    const a = [];
-    for (const k of Object.keys(groupForm.members || {})) {
-      if (!groupForm.members[k]) continue;
-      const [b, id] = k.split("::");
-      if (!b || !id) continue;
-      a.push({ broker: b, userid: id });
-    }
-    return a;
-  };
-
-  const prefillGroupForm = (g) => {
-    const map = {};
-    (g.members || []).forEach((m) => {
-      const k = `${(m.broker || "").toLowerCase()}::${m.userid || m.client_id || ""}`;
-      map[k] = true;
-    });
-    setGroupForm({
-      id: g.id ?? null,
-      name: g.name || "",
-      multiplier: g.multiplier?.toString?.() || "1",
-      members: map,
-    });
-  };
-
-  const openCreateGroup = () => {
-    setEditGroupMode(false);
-    setGroupForm({ id: null, name: "", multiplier: "1", members: {} });
-    setShowGroupModal(true);
-  };
-
-  const openEditGroup = () => {
-    if (selectedGroups.size !== 1) return;
-    const k = [...selectedGroups][0];
-    const g = groups.find((x) => groupKey(x) === k);
-    if (!g) return;
-    setEditGroupMode(true);
-    prefillGroupForm(g);
-    setShowGroupModal(true);
-  };
-
-  const onDeleteGroup = async () => {
-    if (!selectedGroups.size) return;
-    if (!confirm(`Delete ${selectedGroups.size} group(s)?`)) return;
-
-    const uid = getUid();
-    if (!uid) {
-      alert("Login user not detected. Please re-login and try again.");
-      return;
-    }
-
-    const ids = [...selectedGroups];
-    let ok = false;
-    try {
-      const r = await fetch(`${API_BASE}/delete_group`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-id": uid },
-        body: JSON.stringify({ ids, names: ids }),
-      });
-      ok = r.ok;
-    } catch {}
-
-    if (ok) await loadGroups();
-    setSelectedGroups(new Set());
-  };
-
-  const onSubmitGroup = async (e) => {
-    e.preventDefault();
-
-    const uid = getUid();
-    if (!uid) {
-      alert("Login user not detected. Please re-login and try again.");
-      return;
-    }
-
-    const members = membersArrayFromForm();
-    const m = groupForm.multiplier === "" ? 1 : Number(groupForm.multiplier);
-    if (!groupForm.name.trim() || members.length === 0 || !isFinite(m) || m <= 0) {
-      alert("Enter name, select members & valid multiplier.");
-      return;
-    }
-
-    const payload = {
-      id: groupForm.id || undefined,
-      name: groupForm.name.trim(),
-      multiplier: m,
-      members,
-    };
-
-    const endpoint = editGroupMode ? "edit_group" : "add_group";
-
-    try {
-      await fetch(`${API_BASE}/${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-id": uid },
-        body: JSON.stringify(payload),
-      });
-      await loadGroups();
-    } catch {}
-
-    setShowGroupModal(false);
-    setEditGroupMode(false);
-  };
-
-  const openCopyModal = () => {
-    const rows = {};
-    clients.forEach((c) => {
-      rows[keyOf(c)] = { selected: false, mult: "1" };
-    });
-    setCopyForm({ name: "", master: "", rows });
-    setShowCopyModal(true);
-  };
-
-  const onSubmitCopy = async (e) => {
-    e.preventDefault();
-
-    const uid = getUid();
-    if (!uid) {
-      alert("Login user not detected. Please re-login and try again.");
-      return;
-    }
-
-    const name = (copyForm.name || "").trim();
-    const master = (copyForm.master || "").trim();
-    if (!name || !master) {
-      alert("Enter name & select master");
-      return;
-    }
-
-    const children = [];
-    const multipliers = {};
-    for (const [k, v] of Object.entries(copyForm.rows || {})) {
-      if (!v?.selected) continue;
-      const [, id] = k.split("::");
-      if (!id || id === master) continue;
-      children.push(id);
-      const mm = parseFloat(v.mult);
-      multipliers[id] = !isFinite(mm) || mm <= 0 ? 1 : mm;
-    }
-
-    if (children.length === 0) {
-      alert("Select at least one Child.");
-      return;
-    }
-
-    const body = {
-      name,
-      setup_name: name,
-      master,
-      master_account: master,
-      children,
-      child_accounts: children,
-      multipliers,
-      enabled: false,
-    };
-
-    try {
-      const r = await fetch(`${API_BASE}/save_copytrading_setup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-user-id": uid },
-        body: JSON.stringify(body),
-      });
-      if (!r.ok) {
-        alert(`Error saving: ${r.status}`);
-        return;
-      }
-      setShowCopyModal(false);
-    } catch {
-      alert("Network error");
     }
   };
 
@@ -638,16 +497,16 @@ export default function Clients() {
           </>
         ) : (
           <>
-            <Button variant="success" onClick={openCreateGroup}>
+            <Button variant="success" disabled>
               Create Group
             </Button>
-            <Button variant="secondary" disabled={selectedGroups.size !== 1} onClick={openEditGroup}>
+            <Button variant="secondary" disabled>
               Edit Group
             </Button>
-            <Button variant="danger" disabled={selectedGroups.size === 0} onClick={onDeleteGroup}>
+            <Button variant="danger" disabled>
               Delete Group
             </Button>
-            <Button variant="primary" onClick={openCopyModal}>
+            <Button variant="primary" disabled>
               Copy Setup
             </Button>
           </>
@@ -745,11 +604,7 @@ export default function Clients() {
                   </td>
                   <td>{g.name}</td>
                   <td>{g.multiplier}</td>
-                  <td>
-                    {(g.members || [])
-                      .map((m) => `${(m.broker || "").toUpperCase()}:${m.userid || m.client_id}`)
-                      .join(", ")}
-                  </td>
+                  <td>{(g.members || []).map((m) => `${(m.broker || "").toUpperCase()}:${m.userid || m.client_id}`).join(", ")}</td>
                 </tr>
               );
             })}
@@ -757,8 +612,7 @@ export default function Clients() {
         </Table>
       )}
 
-      {/* Modals: keep your existing modals as-is (same UI) */}
-      {/* Add/Edit Client Modal */}
+      {/* Add/Edit Client Modal (same as your UI) */}
       <Modal show={showModal} onHide={() => { setShowModal(false); pollingAbortRef.current = true; }}>
         <Form onSubmit={onSubmit}>
           <Modal.Header closeButton>
@@ -795,63 +649,54 @@ export default function Clients() {
               />
             </Form.Group>
 
-            {(broker === "dhan" || broker === "motilal") && (
-              <>
-                <Form.Group className="mb-2">
-                  <Form.Label>Mobile Number *</Form.Label>
-                  <Form.Control
-                    required={broker === "dhan"}
-                    value={addForm.mobile}
-                    onChange={(e) => setAddForm((p) => ({ ...p, mobile: e.target.value.trim() }))}
-                    placeholder={broker === "dhan" ? "Registered Mobile" : "Motilal API Key (unused)"}
-                  />
-                </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>Mobile Number *</Form.Label>
+              <Form.Control
+                required={broker === "dhan"}
+                value={addForm.mobile}
+                onChange={(e) => setAddForm((p) => ({ ...p, mobile: e.target.value.trim() }))}
+              />
+            </Form.Group>
 
-                <Form.Group className="mb-2">
-                  <Form.Label>{broker === "dhan" ? "PIN *" : "Password *"}</Form.Label>
-                  <Form.Control
-                    type="password"
-                    required
-                    value={addForm.pin}
-                    onChange={(e) => setAddForm((p) => ({ ...p, pin: e.target.value.trim() }))}
-                    placeholder={broker === "dhan" ? "Trading PIN" : "Motilal Password"}
-                  />
-                </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>{broker === "dhan" ? "PIN *" : "Password *"}</Form.Label>
+              <Form.Control
+                type="password"
+                required
+                value={addForm.pin}
+                onChange={(e) => setAddForm((p) => ({ ...p, pin: e.target.value.trim() }))}
+              />
+            </Form.Group>
 
-                <Form.Group className="mb-2">
-                  <Form.Label>API Key *</Form.Label>
-                  <Form.Control
-                    required
-                    value={addForm.apikey}
-                    onChange={(e) => setAddForm((p) => ({ ...p, apikey: e.target.value.trim() }))}
-                    placeholder={broker === "dhan" ? "Dhan API Key" : "Motilal API Key"}
-                  />
-                </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>API Key *</Form.Label>
+              <Form.Control
+                required
+                value={addForm.apikey}
+                onChange={(e) => setAddForm((p) => ({ ...p, apikey: e.target.value.trim() }))}
+              />
+            </Form.Group>
 
-                <Form.Group className="mb-2">
-                  <Form.Label>{broker === "dhan" ? "API Secret *" : "PAN *"}</Form.Label>
-                  <Form.Control
-                    type="password"
-                    required
-                    value={addForm.api_secret}
-                    onChange={(e) => setAddForm((p) => ({ ...p, api_secret: e.target.value.trim() }))}
-                    placeholder={broker === "dhan" ? "API Secret" : "Motilal PAN"}
-                  />
-                </Form.Group>
+            <Form.Group className="mb-2">
+              <Form.Label>{broker === "dhan" ? "API Secret *" : "PAN *"}</Form.Label>
+              <Form.Control
+                type="password"
+                required
+                value={addForm.api_secret}
+                onChange={(e) => setAddForm((p) => ({ ...p, api_secret: e.target.value.trim() }))}
+              />
+            </Form.Group>
 
-                <Form.Group className="mb-2">
-                  <Form.Label>TOTP Key {broker === "dhan" ? "*" : "(optional)"}</Form.Label>
-                  <Form.Control
-                    type="password"
-                    required={broker === "dhan"}
-                    value={addForm.totpkey}
-                    onChange={(e) => setAddForm((p) => ({ ...p, totpkey: e.target.value.trim() }))}
-                    placeholder="Authenticator Secret Key"
-                  />
-                  <Form.Text muted>Used for auto login OTP generation.</Form.Text>
-                </Form.Group>
-              </>
-            )}
+            <Form.Group className="mb-2">
+              <Form.Label>TOTP Key {broker === "dhan" ? "*" : "(optional)"}</Form.Label>
+              <Form.Control
+                type="password"
+                required={broker === "dhan"}
+                value={addForm.totpkey}
+                onChange={(e) => setAddForm((p) => ({ ...p, totpkey: e.target.value.trim() }))}
+              />
+              <Form.Text muted>Used for auto login OTP generation.</Form.Text>
+            </Form.Group>
 
             <Form.Group className="mb-2">
               <Form.Label>Capital</Form.Label>
@@ -861,7 +706,6 @@ export default function Clients() {
                 min="0"
                 value={addForm.capital}
                 onChange={(e) => setAddForm((p) => ({ ...p, capital: e.target.value }))}
-                placeholder="e.g. 100000"
               />
             </Form.Group>
           </Modal.Body>
