@@ -1,80 +1,4 @@
-function getLoggedInUserId() {
-  // We support multiple storage keys so it works with different login pages.
-  // Priority order: explicit mb_user_id, then common variants, then JSON blobs.
-  const directKeys = ['mb_user_id', 'user_id', 'userid', 'userId', 'uid', 'logged_in_user', 'loggedInUserId'];
-  for (const k of directKeys) {
-    const v = (typeof window !== 'undefined' && window.localStorage) ? localStorage.getItem(k) : '';
-    if (v && String(v).trim()) return String(v).trim();
-  }
-
-  // Sometimes login stores a JSON object (e.g., "user" or "profile").
-  const jsonKeys = ['user', 'profile', 'auth', 'session'];
-  for (const k of jsonKeys) {
-    try {
-      const raw = (typeof window !== 'undefined' && window.localStorage) ? localStorage.getItem(k) : '';
-      if (!raw) continue;
-      const obj = JSON.parse(raw);
-      const cand =
-        obj?.user_id ?? obj?.userid ?? obj?.userId ?? obj?.uid ?? obj?.id ?? obj?.username ?? obj?.mobile ?? obj?.email;
-      if (cand && String(cand).trim()) return String(cand).trim();
-    } catch {
-      // ignore
-    }
-  }
-
-  return '';
-}
-
-    if (!userId) {
-      setError('User ID is not set. Please set User ID above and try again.');
-      return;
-    }
-
-
-  // Logged-in user id (owner of these clients). We send it in headers (x-user-id).
-  const [userId, setUserId] = useState(() => getLoggedInUserId());
-  const [userIdDraft, setUserIdDraft] = useState(() => getLoggedInUserId());
-
-  function persistUserId(next) {
-    const v = String(next || '').trim();
-    setUserId(v);
-    setUserIdDraft(v);
-    try {
-      localStorage.setItem('mb_user_id', v);
-    } catch {
-      // ignore
-    }
-  }
-
 "use client";
-function getLoggedInUserId() {
-  // We support multiple storage keys so it works with different login pages.
-  // Priority order: explicit mb_user_id, then common variants, then JSON blobs.
-  const directKeys = ['mb_user_id', 'user_id', 'userid', 'userId', 'uid', 'logged_in_user', 'loggedInUserId'];
-  for (const k of directKeys) {
-    const v = (typeof window !== 'undefined' && window.localStorage) ? localStorage.getItem(k) : '';
-    if (v && String(v).trim()) return String(v).trim();
-  }
-
-  // Sometimes login stores a JSON object (e.g., "user" or "profile").
-  const jsonKeys = ['user', 'profile', 'auth', 'session'];
-  for (const k of jsonKeys) {
-    try {
-      const raw = (typeof window !== 'undefined' && window.localStorage) ? localStorage.getItem(k) : '';
-      if (!raw) continue;
-      const obj = JSON.parse(raw);
-      const cand =
-        obj?.user_id ?? obj?.userid ?? obj?.userId ?? obj?.uid ?? obj?.id ?? obj?.username ?? obj?.mobile ?? obj?.email;
-      if (cand && String(cand).trim()) return String(cand).trim();
-    } catch {
-      // ignore
-    }
-  }
-
-  return '';
-}
-
-
 
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { Card, Button, Modal, Form, Table, Badge, ButtonGroup } from 'react-bootstrap';
@@ -90,19 +14,6 @@ import { Card, Button, Modal, Form, Table, Badge, ButtonGroup } from 'react-boot
 // properties for each broker.  See the onSubmit handler for details.
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:5001';
-
-// ---------------- logged-in user id (Option 1) ----------------
-// We pass the logged-in user's id to the backend via a request header.
-// Set this once at login time (recommended):
-//   localStorage.setItem('mb_user_id', '<USERID>')
-// This component also checks a few fallback keys so it works with older builds.
-
-const withUserHeader = (headers = {}) => {
-  const uid = userId || getLoggedInUserId();
-  return uid ? { ...headers, 'x-user-id': uid } : { ...headers };
-};
-};
-
 
 // ----- helpers -----
 const LS_KEY_GROUPS = 'mb_groups_v2_groupMultiplier';
@@ -131,7 +42,7 @@ export default function Clients() {
   const [broker, setBroker] = useState('dhan');
   const [addForm, setAddForm] = useState({
     name: '',
-    client_id: '',
+    userid: '',
     mobile: '',
     pin: '',
     apikey: '',
@@ -140,7 +51,7 @@ export default function Clients() {
     capital: '',
   });
 
-  const [editingKey, setEditingKey] = useState({ broker: null, client_id: null });
+  const [editingKey, setEditingKey] = useState({ broker: null, userid: null });
 
   const [loggingNow, setLoggingNow] = useState(new Set());
   const pollingAbortRef = useRef(false);
@@ -167,24 +78,28 @@ export default function Clients() {
 
   // Load clients and groups on mount
   async function loadClients() {
+    const uid = userId || (typeof window !== 'undefined' ? (localStorage.getItem(LS_KEY_USERID) || '') : '');
+    if (!uid) {
+      // No logged-in user selected yet
+      setClients([]);
+      return;
+    }
     try {
-      const r = await fetch(`${API_BASE}/clients`, {
+      const url = `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`;
+      const r = await fetch(url, {
         cache: 'no-store',
-        headers: withUserHeader(),
+        headers: { 'x-user-id': uid },
       });
       const j = await r.json();
       setClients(Array.isArray(j) ? j : j.clients || []);
     } catch {
       setClients([]);
     }
-  }
+  }}
 
   async function loadGroups() {
     try {
-      const r = await fetch(`${API_BASE}/groups`, {
-        cache: 'no-store',
-        headers: withUserHeader(),
-      });
+      const r = await fetch(`${API_BASE}/groups`, { cache: 'no-store' });
       if (r.ok) {
         const j = await r.json();
         const arr = Array.isArray(j) ? j : j.groups || [];
@@ -199,12 +114,15 @@ export default function Clients() {
   }
 
   useEffect(() => {
-    loadClients();
     loadGroups();
   }, []);
 
+  useEffect(() => {
+    loadClients();
+  }, [userId]);
+
   // Key helper: derive a unique key from broker + userid
-  const keyOf = (c) => `${(c.broker || '').toLowerCase()}::${c.client_id || c.userid || ''}`;
+  const keyOf = (c) => `${(c.broker || '').toLowerCase()}::${c.userid || c.client_id || ''}`;
   const allClientKeys = useMemo(() => clients.map(keyOf), [clients]);
   const toggleAllClients = (ch) => setSelectedClients(ch ? new Set(allClientKeys) : new Set());
   const toggleOneClient = (k, ch) =>
@@ -242,8 +160,8 @@ export default function Clients() {
   const openAdd = () => {
     setEditMode(false);
     setBroker('dhan');
-    setAddForm({ name: '', client_id: '', mobile: '', pin: '', apikey: '', api_secret: '', totpkey: '', capital: '' });
-    setEditingKey({ broker: null, client_id: null });
+    setAddForm({ name: '', userid: '', mobile: '', pin: '', apikey: '', api_secret: '', totpkey: '', capital: '' });
+    setEditingKey({ broker: null, userid: null });
     setShowModal(true);
   };
 
@@ -258,7 +176,7 @@ export default function Clients() {
     setBroker(b);
     setAddForm({
       name: row.name || row.display_name || '',
-      client_id: row.client_id || row.userid || '',
+      userid: row.userid || row.client_id || '',
       mobile: row.mobile || '',
       pin: row.pin || '',
       apikey: row.apikey || '',
@@ -266,7 +184,7 @@ export default function Clients() {
       totpkey: row.totpkey || '',
       capital: row.capital?.toString?.() || '',
     });
-    setEditingKey({ broker: b, client_id: row.client_id || row.userid || '' });
+    setEditingKey({ broker: b, userid: row.userid || row.client_id || '' });
     setShowModal(true);
   };
 
@@ -274,17 +192,20 @@ export default function Clients() {
   const onDelete = async () => {
     if (!selectedClients.size) return;
     if (!confirm(`Delete ${selectedClients.size} client(s)?`)) return;
+    const uid = userId || (typeof window !== 'undefined' ? (localStorage.getItem(LS_KEY_USERID) || '') : '');
+    if (!uid) { setError('User ID is not set. Please enter Logged-in User ID above.'); return; }
+
     const items = [...selectedClients]
       .map((k) => {
         const r = clients.find((c) => keyOf(c) === k);
-        return { broker: (r?.broker || '').toLowerCase(), client_id: r?.client_id || r?.userid || '' };
+        return { broker: (r?.broker || '').toLowerCase(), userid: r?.userid || r?.client_id || '' };
       })
       .filter(Boolean);
     try {
       await fetch(`${API_BASE}/delete_client`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...withUserHeader() },
-        body: JSON.stringify({ items }),
+        headers: { 'Content-Type': 'application/json', 'x-user-id': uid },
+        body: JSON.stringify({ user_id: uid, items }),
       });
       await loadClients();
     } catch {}
@@ -292,21 +213,18 @@ export default function Clients() {
   };
 
   // Poll until client logs in after adding/editing
-  async function pollUntilLoggedIn(broker, client_id, { intervalMs = 1000, maxTries = 15 } = {}) {
-    const targetKey = `${broker}::${client_id}`;
+  async function pollUntilLoggedIn(broker, userid, { intervalMs = 1000, maxTries = 15 } = {}) {
+    const targetKey = `${broker}::${userid}`;
     setLoggingNow((prev) => new Set(prev).add(targetKey));
     pollingAbortRef.current = false;
     let tries = 0;
     while (!pollingAbortRef.current && tries < maxTries) {
       try {
-        const r = await fetch(`${API_BASE}/clients`, {
-          cache: 'no-store',
-          headers: withUserHeader(),
-        });
+        const r = await fetch(`${API_BASE}/clients`, { cache: 'no-store' });
         const j = await r.json();
         const list = Array.isArray(j) ? j : j.clients || [];
         const hit = list.find(
-          (c) => (c.broker || '').toLowerCase() === broker && (c.client_id || c.userid || '') === client_id
+          (c) => (c.broker || '').toLowerCase() === broker && (c.userid || c.client_id || '') === userid
         );
         if (hit) {
           setClients(list);
@@ -361,28 +279,29 @@ export default function Clients() {
     const bodyBase = {
       broker,
       name: addForm.name || undefined,
-      client_id: addForm.client_id,
+      client_id: addForm.userid,
+      user_id: uid,
       capital: capitalNum,
       creds,
       ...creds,
     };
-    if (editMode && editingKey.client_id) {
-      bodyBase._original = { broker: editingKey.broker, client_id: editingKey.client_id };
+    if (editMode && editingKey.userid) {
+      bodyBase._original = { broker: editingKey.broker, userid: editingKey.userid };
       bodyBase.original_broker = editingKey.broker;
-      bodyBase.original_client_id = editingKey.client_id;
+      bodyBase.original_userid = editingKey.userid;
     }
     const endpoint = editMode ? 'edit_client' : 'add_client';
     try {
       const r = await fetch(`${API_BASE}/${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...withUserHeader() },
+        headers: { 'Content-Type': 'application/json', 'x-user-id': uid },
         body: JSON.stringify(bodyBase),
       });
       setShowModal(false);
       setSelectedClients(new Set());
       await loadClients();
       const b = (editMode ? editingKey.broker : broker) || broker;
-      const id = editMode ? editingKey.client_id: addForm.client_id;
+      const id = editMode ? editingKey.userid : addForm.userid;
       if (b && id) pollUntilLoggedIn(b, id);
       if (!r.ok) {
         console.warn(`/${endpoint} failed`, await r.text().catch(() => ''));
@@ -399,7 +318,7 @@ export default function Clients() {
       if (!groupForm.members[k]) continue;
       const [b, id] = k.split('::');
       if (!b || !id) continue;
-      a.push({ broker: b, client_id: id });
+      a.push({ broker: b, userid: id });
     }
     return a;
   };
@@ -407,7 +326,7 @@ export default function Clients() {
   const prefillGroupForm = (g) => {
     const map = {};
     (g.members || []).forEach((m) => {
-      const k = `${(m.broker || '').toLowerCase()}::${m.client_id || m.userid || ''}`;
+      const k = `${(m.broker || '').toLowerCase()}::${m.userid || m.client_id || ''}`;
       map[k] = true;
     });
     setGroupForm({
@@ -443,7 +362,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/delete_group`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...withUserHeader() },
+        headers: { 'Content-Type': 'application/json', 'x-user-id': uid },
         body: JSON.stringify({ ids, names: ids }),
       });
       ok = r.ok;
@@ -475,7 +394,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...withUserHeader() },
+        headers: { 'Content-Type': 'application/json', 'x-user-id': uid },
         body: JSON.stringify(payload),
       });
       ok = r.ok;
@@ -545,7 +464,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/save_copytrading_setup`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-user-id': uid },
         body: JSON.stringify(body),
       });
       if (!r.ok) {
@@ -561,42 +480,17 @@ export default function Clients() {
   // Render component
   return (
     <Card className="p-3">
-
-      {/* Logged-in User (owner) */}
-      <div className="mb-3">
-        <Card className="p-2">
-          <div className="d-flex flex-wrap align-items-center" style={{ gap: 10 }}>
-            <div style={{ fontWeight: 600 }}>User ID</div>
-            <Form.Control
-              size="sm"
-              style={{ maxWidth: 220 }}
-              placeholder="Enter your User ID"
-              value={userIdDraft}
-              onChange={(e) => setUserIdDraft(e.target.value)}
-            />
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={() => persistUserId(userIdDraft)}
-              disabled={!String(userIdDraft || '').trim()}
-            >
-              Set
-            </Button>
-            <Badge bg={userId ? 'success' : 'warning'}>{userId ? `Active: ${userId}` : 'Not set'}</Badge>
-            {!userId && (
-              <div className="text-muted" style={{ fontSize: 12 }}>
-                Set this once. It will be saved in your browser and sent to backend as <code>x-user-id</code>.
-              </div>
-            )}
-          </div>
-        </Card>
-      </div>
-
-
       {/* Toolbar */}
       <div className="d-flex mb-3" style={{ gap: 10 }}>
         {subtab === 'clients' ? (
           <>
+            <Form.Control
+              size="sm"
+              style={{ maxWidth: 220 }}
+              placeholder="Logged-in User ID"
+              value={userId}
+              onChange={(e) => saveUserId(e.target.value)}
+            />
             <Button variant="success" onClick={openAdd}>Add Client</Button>
             <Button
               variant="secondary"
@@ -684,7 +578,7 @@ export default function Clients() {
                         onChange={(e) => toggleOneClient(k, e.target.checked)}
                       />
                     </td>
-                    <td>{c.name || c.display_name || c.client_id || c.userid}</td>
+                    <td>{c.name || c.display_name || c.userid || c.client_id}</td>
                     <td>{c.broker || ''}</td>
                     <td>{statusBadge(c)}</td>
                   </tr>
@@ -733,7 +627,7 @@ export default function Clients() {
                     <td>{g.multiplier}</td>
                     <td>
                       {(g.members || [])
-                        .map((m) => `${(m.broker || '').toUpperCase()}:${m.client_id || m.userid}`)
+                        .map((m) => `${(m.broker || '').toUpperCase()}:${m.userid || m.client_id}`)
                         .join(', ')}
                     </td>
                   </tr>
@@ -757,7 +651,7 @@ export default function Clients() {
                 disabled={editMode}
                 onChange={(e) => {
                   setBroker(e.target.value);
-                  setAddForm({ name: '', client_id: '', mobile: '', pin: '', apikey: '', api_secret: '', totpkey: '', capital: '' });
+                  setAddForm({ name: '', userid: '', mobile: '', pin: '', apikey: '', api_secret: '', totpkey: '', capital: '' });
                 }}
               >
                 <option value="dhan">Dhan</option>
@@ -777,8 +671,8 @@ export default function Clients() {
               <Form.Control
                 required
                 disabled={editMode}
-                value={addForm.client_id}
-                onChange={(e) => setAddForm((p) => ({ ...p, client_id: e.target.value.trim() }))}
+                value={addForm.userid}
+                onChange={(e) => setAddForm((p) => ({ ...p, userid: e.target.value.trim() }))}
               />
             </Form.Group>
             {/* Show Dhan fields or Motilal fields (identical layout) */}
@@ -897,7 +791,7 @@ export default function Clients() {
                     <Form.Check
                       key={k}
                       type="checkbox"
-                      label={`${(c.broker || '').toUpperCase()}:${c.client_id || c.userid}`}
+                      label={`${(c.broker || '').toUpperCase()}:${c.userid || c.client_id}`}
                       checked={groupForm.members[k] || false}
                       onChange={(e) => {
                         const checked = e.target.checked;
@@ -948,8 +842,8 @@ export default function Clients() {
                 {clients.map((c) => {
                   const k = keyOf(c);
                   return (
-                    <option key={k} value={c.client_id || c.userid}>
-                      {(c.broker || '').toUpperCase()}:{c.client_id || c.userid}
+                    <option key={k} value={c.userid || c.client_id}>
+                      {(c.broker || '').toUpperCase()}:{c.userid || c.client_id}
                     </option>
                   );
                 })}
@@ -976,7 +870,7 @@ export default function Clients() {
                         }}
                       />
                       <span style={{ flex: 1 }}>
-                        {(c.broker || '').toUpperCase()}:{c.client_id || c.userid}
+                        {(c.broker || '').toUpperCase()}:{c.userid || c.client_id}
                       </span>
                       <Form.Control
                         style={{ width: '80px' }}
