@@ -19,6 +19,7 @@ const detectUserFromWelcomeText = () => {
   return '';
 };
 
+
 const safeJson = async (r) => {
   try { return await r.json(); } catch { return null; }
 };
