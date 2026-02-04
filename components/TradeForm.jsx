@@ -1,14 +1,17 @@
-"use client";
+// components/TradeForm.jsx — multi-user safe: fetch logged-in user's clients/groups (UI unchanged)
+'use client';
 
-import React, { useEffect, useMemo, useState, useRef } from 'react';
-import {
-  Container, Row, Col, Form, Button, Card, Alert, Table
-} from 'react-bootstrap';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Col, Form, Row, Alert, Card, Spinner } from 'react-bootstrap';
+import AsyncSelect from 'react-select/async';
 import api from './api';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:5001';
+const FORM_STORAGE_KEY_BASE = 'woi-trade-form-v1';
+const LS_KEY_USERID = 'mb_logged_in_userid_v1';
 
-// --- Logged-in user detection (from navbar "Welcome, <user>") ---
+// ---------- user detection (same idea as Clients.jsx) ----------
+// 1) Prefer navbar text: "Welcome, <user>"
+// 2) Fallback to localStorage
 const detectUserFromWelcomeText = () => {
   if (typeof window === 'undefined') return '';
   try {
@@ -19,302 +22,438 @@ const detectUserFromWelcomeText = () => {
   return '';
 };
 
+const readLSRaw = (k) => {
+  try {
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+};
+
+const writeLSRaw = (k, v) => {
+  try {
+    localStorage.setItem(k, String(v ?? ''));
+  } catch {}
+};
 
 const safeJson = async (r) => {
-  try { return await r.json(); } catch { return null; }
+  try {
+    return await r.json();
+  } catch {
+    return null;
+  }
 };
 
-const toIntOr = (v, fallback = 0) => {
-  const n = parseInt(String(v ?? ''), 10);
-  return Number.isFinite(n) ? n : fallback;
+const onlyDigits = (v) => (v ?? '').replace(/[^\d]/g, '');
+const toIntOr = (v, fallback = 1) => {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 };
+
+// canonical values (what backend expects)
+const ORDER_TYPES = [
+  { value: 'LIMIT', label: 'LIMIT' },
+  { value: 'MARKET', label: 'MARKET' },
+  { value: 'STOPLOSS', label: 'STOPLOSS' }, // Motilal prefers STOPLOSS
+  { value: 'SL_MARKET', label: 'SL_MARKET' }, // Stoploss-Market
+];
+
+const PRODUCT_TYPES = [
+  { value: 'VALUEPLUS', label: 'INTRADAY' },
+  { value: 'DELIVERY', label: 'DELIVERY' },
+  { value: 'NORMAL', label: 'NORMAL' },
+  { value: 'SELLFROMDP', label: 'SELLFROMDP' },
+  { value: 'BTST', label: 'BTST' },
+  { value: 'MTF', label: 'MTF' },
+];
+
+const EXCHANGES = ['NSE', 'BSE', 'NSEFO', 'NSECD', 'NCDEX', 'MCX', 'BSEFO', 'BSECD'];
 
 export default function TradeForm() {
-  const [action, setAction] = useState('BUY');
-  const [productType, setProductType] = useState('INTRADAY');
-  const [orderType, setOrderType] = useState('LIMIT');
-  const [orderDuration, setOrderDuration] = useState('DAY');
-  const [exchange, setExchange] = useState('NSE');
-  const [symbol, setSymbol] = useState('');
-  const [symbolInput, setSymbolInput] = useState('');
-  const [price, setPrice] = useState('');
-  const [triggerPrice, setTriggerPrice] = useState('');
-  const [disclosedQty, setDisclosedQty] = useState('');
+  // ---- logged-in user (auto) ----
+  const [userId, setUserId] = useState('');
+  const userTouchedRef = useRef(false);
 
-  const [qtyMode, setQtyMode] = useState('manual'); // 'manual' | 'auto'
-  const [qty, setQty] = useState('1');
+  const setUserIdFromSession = (next) => {
+    const v = String(next || '').trim();
+    if (!v) return;
+    setUserId(v);
+    writeLSRaw(LS_KEY_USERID, v);
+  };
+
+  const getUid = () => {
+    const w = detectUserFromWelcomeText();
+    if (w) {
+      if (!userTouchedRef.current && w !== userId) setUserIdFromSession(w);
+      return w;
+    }
+    return String(userId || '').trim();
+  };
+
+  // On mount: hydrate uid (welcome -> LS) and keep tracking welcome changes
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const welcome = detectUserFromWelcomeText();
+    if (welcome) {
+      setUserIdFromSession(welcome);
+    } else {
+      const ls = (readLSRaw(LS_KEY_USERID) || '').trim();
+      if (ls) setUserId(ls);
+    }
+
+    // quick retry (hydration delay)
+    let tries = 0;
+    const t = setInterval(() => {
+      tries += 1;
+      const w = detectUserFromWelcomeText();
+      if (w && !userTouchedRef.current) {
+        setUserIdFromSession(w);
+        clearInterval(t);
+      }
+      if (tries >= 16) clearInterval(t); // ~8s
+    }, 500);
+
+    // observe navbar/body updates (login switch)
+    const applyWelcome = () => {
+      const w = detectUserFromWelcomeText();
+      if (!w) return;
+      if (!userTouchedRef.current && w !== userId) setUserIdFromSession(w);
+    };
+
+    const obs = new MutationObserver(() => applyWelcome());
+    try {
+      obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+    } catch {}
+
+    return () => {
+      clearInterval(t);
+      obs.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // user-scoped local storage key (prevents cross-user mixing)
+  const FORM_STORAGE_KEY = useMemo(() => {
+    const uid = String(userId || '').trim();
+    return uid ? `${FORM_STORAGE_KEY_BASE}::${uid}` : FORM_STORAGE_KEY_BASE;
+  }, [userId]);
+
+  // core state
+  const [action, setAction] = useState('BUY'); // BUY | SELL
+  const [productType, setProductType] = useState('VALUEPLUS'); // intraday default
+  const [orderType, setOrderType] = useState('LIMIT'); // canonical value
+  const [qtySelection, setQtySelection] = useState('manual'); // manual | auto
 
   const [groupAcc, setGroupAcc] = useState(false);
   const [diffQty, setDiffQty] = useState(false);
-  const [multiplierEnabled, setMultiplierEnabled] = useState(false);
+  const [multiplier, setMultiplier] = useState(false);
+
+  const [qty, setQty] = useState('1');
+  const [exchange, setExchange] = useState('NSE');
+  const [symbol, setSymbol] = useState(null); // { value, label }
+  const [price, setPrice] = useState(0);
+  const [trigPrice, setTrigPrice] = useState(0);
+  const [disclosedQty, setDisclosedQty] = useState(0);
+
+  const [timeForce, setTimeForce] = useState('DAY'); // DAY | IOC
+  const [amo, setAmo] = useState(false);
 
   const [clients, setClients] = useState([]);
-  const [groups, setGroups] = useState([]);
-
   const [selectedClients, setSelectedClients] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [selectedGroups, setSelectedGroups] = useState([]);
 
   const [perClientQty, setPerClientQty] = useState({});
   const [perGroupQty, setPerGroupQty] = useState({});
 
   const [busy, setBusy] = useState(false);
-  const [showToast, setShowToast] = useState(false);
-  const [toastMsg, setToastMsg] = useState('');
+  const [toast, setToast] = useState(null);
 
-  const [sessionUser, setSessionUser] = useState('');
-
-  // ---------- initial data (user-scoped) ----------
+  // ---------- load from localStorage (scoped by user) ----------
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const apply = () => {
-      const u = detectUserFromWelcomeText();
-      if (u) setSessionUser(u);
-    };
-
-    apply();
-
-    const obs = new MutationObserver(() => apply());
-    try { obs.observe(document.body, { childList: true, subtree: true, characterData: true }); } catch {}
-
-    // fallback polling for a few seconds (hydration timing)
-    let tries = 0;
-    const t = setInterval(() => {
-      tries += 1;
-      apply();
-      if (tries >= 16) clearInterval(t);
-    }, 500);
-
-    return () => { obs.disconnect(); clearInterval(t); };
-  }, []);
-
-  const getUid = () => (detectUserFromWelcomeText() || sessionUser || '').trim();
-
-  const normalizeClients = (arr) => {
-    const list = Array.isArray(arr) ? arr : [];
-    return list.map((c) => {
-      const broker = String(c.broker || '').toLowerCase();
-      const userid = c.userid || c.client_id || '';
-      const name = c.name || c.display_name || userid;
-      return { ...c, broker, userid, client_id: userid, name, _key: `${broker}::${userid}` };
-    });
-  };
-
-  const normalizeGroups = (arr) => {
-    const list = Array.isArray(arr) ? arr : [];
-    return list.map((g) => ({
-      group_name: g.name || g.group_name || g.id,
-      no_of_clients: (g.members || g.clients || []).length,
-      multiplier: Number(g.multiplier ?? 1),
-      client_names: (g.members || g.clients || []).map((m) => m.name || m.userid || m.client_id || m),
-      _raw: g,
-    }));
-  };
-
-  const loadClientsForUser = async () => {
-    const uid = getUid();
-    if (!uid) { setClients([]); return; }
     try {
-      const r = await fetch(`${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`, {
+      const raw = localStorage.getItem(FORM_STORAGE_KEY);
+      if (!raw) return;
+      const s = JSON.parse(raw);
+
+      setAction((s.action ?? 'BUY').toUpperCase());
+      setProductType(s.productType ?? 'VALUEPLUS');
+      setOrderType(s.orderType ?? 'LIMIT');
+      setQtySelection(s.qtySelection ?? 'manual');
+
+      setGroupAcc(!!s.groupAcc);
+      setDiffQty(!!s.diffQty);
+      setMultiplier(!!s.multiplier);
+
+      setQty(String(s.qty ?? '1'));
+      setExchange((s.exchange ?? 'NSE').toUpperCase());
+      setSymbol(s.symbol ?? null);
+      setPrice(Number(s.price ?? 0));
+      setTrigPrice(Number(s.trigPrice ?? 0));
+      setDisclosedQty(Number(s.disclosedQty ?? 0));
+
+      setTimeForce(s.timeForce ?? 'DAY');
+      setAmo(!!s.amo);
+
+      setSelectedClients(s.selectedClients ?? []);
+      setSelectedGroups(s.selectedGroups ?? []);
+      setPerClientQty(s.perClientQty ?? {});
+      setPerGroupQty(s.perGroupQty ?? {});
+    } catch {
+      /* ignore */
+    }
+  }, [FORM_STORAGE_KEY]);
+
+  // ---------- persist to localStorage ----------
+  useEffect(() => {
+    const snapshot = {
+      action,
+      productType,
+      orderType,
+      qtySelection,
+      groupAcc,
+      diffQty,
+      multiplier,
+      qty,
+      exchange,
+      symbol,
+      price,
+      trigPrice,
+      disclosedQty,
+      timeForce,
+      amo,
+      selectedClients,
+      selectedGroups,
+      perClientQty,
+      perGroupQty,
+    };
+    try {
+      localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(snapshot));
+    } catch {}
+  }, [
+    FORM_STORAGE_KEY,
+    action,
+    productType,
+    orderType,
+    qtySelection,
+    groupAcc,
+    diffQty,
+    multiplier,
+    qty,
+    exchange,
+    symbol,
+    price,
+    trigPrice,
+    disclosedQty,
+    timeForce,
+    amo,
+    selectedClients,
+    selectedGroups,
+    perClientQty,
+    perGroupQty,
+  ]);
+
+  // ---------- fetch clients/groups for logged-in user ----------
+  const normalizeClientRow = (c) => {
+    const client_id = c.client_id || c.userid || c.user_id || '';
+    return {
+      ...c,
+      client_id,
+      name: c.name || c.display_name || client_id,
+      broker: c.broker || c.type || '',
+    };
+  };
+
+  const fetchClientsForUser = async (uid) => {
+    if (!uid) {
+      setClients([]);
+      return;
+    }
+
+    // Try multiuser endpoint first: /clients?user_id=...
+    try {
+      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_BASE || ''}/clients?user_id=${encodeURIComponent(uid)}`, {
         cache: 'no-store',
         headers: { 'x-user-id': uid },
       });
-      const j = await safeJson(r);
-      const list = Array.isArray(j) ? j : j?.clients || [];
-      setClients(normalizeClients(list));
+      if (resp.ok) {
+        const j = await safeJson(resp);
+        const arr = Array.isArray(j) ? j : j?.clients || [];
+        setClients(arr.map(normalizeClientRow));
+        return;
+      }
+    } catch {
+      /* fallthrough */
+    }
+
+    // Fallback: legacy endpoint via api client (if your api.js injects baseURL)
+    try {
+      const res = await api.get('/get_clients', {
+        headers: { 'x-user-id': uid },
+        params: { user_id: uid },
+      });
+      const arr = res.data?.clients || [];
+      setClients(arr.map(normalizeClientRow));
     } catch {
       setClients([]);
     }
   };
 
-  const loadGroupsForUser = async () => {
-    const uid = getUid();
+  const fetchGroupsForUser = async (uid) => {
+    // If groups are global, this still works. If user-specific, header helps.
     try {
-      const r = await fetch(`${API_BASE}/groups`, {
-        cache: 'no-store',
+      const res = await api.get('/groups', {
         headers: uid ? { 'x-user-id': uid } : undefined,
+        params: uid ? { user_id: uid } : undefined,
       });
-      const j = await safeJson(r);
-      const list = Array.isArray(j) ? j : j?.groups || [];
-      setGroups(normalizeGroups(list));
+
+      const rawGroups = res.data?.groups || [];
+      const normalized = rawGroups.map((g) => ({
+        group_name: g.name || g.group_name || g.id,
+        no_of_clients: (g.members || g.clients || []).length,
+        multiplier: Number(g.multiplier ?? 1),
+        client_names: (g.members || g.clients || []).map((m) => m.name || m),
+      }));
+      setGroups(normalized);
     } catch {
       setGroups([]);
     }
   };
 
+  // Initial + whenever logged-in user changes
   useEffect(() => {
-    loadClientsForUser();
-    loadGroupsForUser();
+    const uid = getUid();
+    fetchClientsForUser(uid);
+    fetchGroupsForUser(uid);
+
+    // Important: clear selections when user changes (prevents placing orders for other user)
+    setSelectedClients([]);
+    setSelectedGroups([]);
+    setPerClientQty({});
+    setPerGroupQty({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionUser]);
+  }, [userId]);
 
-  // Keep per-client qty inputs in sync when selection changes
-  useEffect(() => {
-    const next = { ...perClientQty };
-    (selectedClients || []).forEach((cid) => {
-      if (next[cid] == null) next[cid] = '1';
-    });
-    Object.keys(next).forEach((k) => {
-      if (!(selectedClients || []).includes(k)) delete next[k];
-    });
-    setPerClientQty(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedClients]);
+  // ---------- symbol search ----------
+  const loadSymbolOptions = async (inputValue) => {
+    if (!inputValue) return [];
+    const res = await api.get('/search_symbols', { params: { q: inputValue, exchange } });
+    const results = res.data?.results || [];
+    return results.map((r) => ({
+      value: r.id ?? r.token ?? r.symbol ?? r.text,
+      label: r.text ?? r.label ?? String(r.id),
+    }));
+  };
 
-  // Keep per-group qty inputs in sync when selection changes
-  useEffect(() => {
-    const next = { ...perGroupQty };
-    (selectedGroups || []).forEach((gn) => {
-      if (next[gn] == null) next[gn] = '1';
-    });
-    Object.keys(next).forEach((k) => {
-      if (!(selectedGroups || []).includes(k)) delete next[k];
-    });
-    setPerGroupQty(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroups]);
+  // ---------- derived ----------
+  const isStopOrder = orderType === 'STOPLOSS' || orderType === 'SL_MARKET';
 
-  const canUseSingleQty = useMemo(() => !diffQty, [diffQty]);
+  const canUseSingleQty = useMemo(() => {
+    if (groupAcc) return !diffQty;
+    if (!groupAcc) return !(diffQty && selectedClients.length > 0);
+    return true;
+  }, [groupAcc, diffQty, selectedClients.length]);
 
-  // Symbol search suggestions
-  const [symbolSuggestions, setSymbolSuggestions] = useState([]);
-  useEffect(() => {
-    let active = true;
-    const q = (symbolInput || '').trim();
-    if (!q) { setSymbolSuggestions([]); return; }
+  // ---------- validations ----------
+  const validateBeforeSubmit = () => {
+    if (!groupAcc && selectedClients.length === 0) return 'Please select at least one client.';
+    if (groupAcc && selectedGroups.length === 0) return 'Please select at least one group.';
+    if (!symbol?.value) return 'Please select a symbol from the dropdown.';
+    if (orderType === 'MARKET' && Number(price) !== 0) setPrice(0);
+    if (isStopOrder && Number(trigPrice) <= 0) return 'Trigger price is required for STOPLOSS / SL_MARKET orders.';
+    if (toIntOr(qty, 0) <= 0 && canUseSingleQty) return 'Quantity must be a positive number.';
+    return null;
+  };
 
-    const run = async () => {
-      try {
-        const res = await api.get('/search_symbol', { params: { q, exchange } });
-        const arr = res?.data?.symbols || res?.data || [];
-        if (active) setSymbolSuggestions(Array.isArray(arr) ? arr : []);
-      } catch {
-        if (active) setSymbolSuggestions([]);
-      }
-    };
-
-    const t = setTimeout(run, 250);
-    return () => { active = false; clearTimeout(t); };
-  }, [symbolInput, exchange]);
-
-  const onSubmit = async (e) => {
+  // ---------- submit ----------
+  const submit = async (e) => {
     e.preventDefault();
 
-    if (groupAcc && selectedGroups.length === 0) {
-      setToastMsg('Select at least one group.');
-      setShowToast(true);
+    const uid = getUid();
+    if (!uid) {
+      setToast({ variant: 'warning', text: 'Logged-in user not detected. Please re-login.' });
       return;
     }
-    if (!groupAcc && selectedClients.length === 0) {
-      setToastMsg('Select at least one client.');
-      setShowToast(true);
-      return;
-    }
-    if (!symbol) {
-      setToastMsg('Select a symbol.');
-      setShowToast(true);
+
+    const errMsg = validateBeforeSubmit();
+    if (errMsg) {
+      setToast({ variant: 'warning', text: errMsg });
       return;
     }
 
     const safeSingleQty = canUseSingleQty ? toIntOr(qty, 1) : 0;
-
-    // Logged-in user (authoritative)
-    const uid = getUid();
-    if (!uid) {
-      setToastMsg('Logged-in user not detected. Please re-login and try again.');
-      setShowToast(true);
-      return;
-    }
-
-    // Convert UI-selected client keys -> {broker, userid}
-    const clientItems = (selectedClients || [])
-      .map((k) => {
-        const s = String(k || '');
-        const parts = s.split('::');
-        if (parts.length >= 2) return { broker: parts[0], userid: parts.slice(1).join('::') };
-        const hit = (clients || []).find((c) => (c.userid || c.client_id) === s);
-        return { broker: String(hit?.broker || '').toLowerCase(), userid: s };
-      })
-      .filter((x) => x && x.broker && x.userid);
-
-    const groupNames = (selectedGroups || []).map(String);
-
-    // qty maps keyed by userid (backend-friendly)
-    const safePerClientQty = (!groupAcc && diffQty)
-      ? Object.fromEntries(
-          clientItems.map((ci) => [
-            ci.userid,
-            toIntOr(perClientQty[`${ci.broker}::${ci.userid}`] ?? perClientQty[ci.userid], 1)
-          ])
-        )
-      : {};
-
-    const safePerGroupQty = (groupAcc && diffQty)
-      ? Object.fromEntries(groupNames.map((gn) => [gn, toIntOr(perGroupQty[gn], 1)]))
-      : {};
+    const safePerClientQty =
+      !groupAcc && diffQty
+        ? Object.fromEntries(selectedClients.map((cid) => [cid, toIntOr(perClientQty[cid], 1)]))
+        : {};
+    const safePerGroupQty =
+      groupAcc && diffQty
+        ? Object.fromEntries(selectedGroups.map((gn) => [gn, toIntOr(perGroupQty[gn], 1)]))
+        : {};
 
     setBusy(true);
     try {
       const payload = {
+        // user scoping (backend can use either header or this field)
         user_id: uid,
 
         groupacc: groupAcc,
-        groups: groupNames,
-
-        // IMPORTANT: send broker+userid so backend can find the exact file
-        clients: clientItems,
+        groups: selectedGroups,
+        clients: selectedClients,
 
         action,
         ordertype: orderType,
         producttype: productType,
-        orderduration: orderDuration,
+        orderduration: timeForce,
         exchange,
-        symbol,
-        qty: safeSingleQty,
-
-        price: price === '' ? 0 : Number(price),
-        triggerprice: triggerPrice === '' ? 0 : Number(triggerPrice),
-        disclosedquantity: disclosedQty === '' ? 0 : Number(disclosedQty),
-
-        amoorder: 'N',
-        qtySelection: qtyMode, // 'manual' | 'auto'
-        quantity: safeSingleQty,
-
-        perclientqty: safePerClientQty,
-        pergroupqty: safePerGroupQty,
-
+        symbol: symbol?.value || '',
+        price: Number(price) || 0,
+        triggerprice: Number(trigPrice) || 0,
+        disclosedquantity: Number(disclosedQty) || 0,
+        amoorder: amo ? 'Y' : 'N',
+        qtySelection,
+        quantityinlot: safeSingleQty,
+        perClientQty: safePerClientQty,
+        perGroupQty: safePerGroupQty,
         diffQty,
-        multiplier: multiplierEnabled,
+        multiplier,
       };
 
-      const res = await api.post('/place_order', payload, { headers: { 'x-user-id': uid } });
+      const resp = await api.post('/place_order', payload, {
+        headers: { 'x-user-id': uid },
+      });
 
-      setToastMsg(`Order placed. Response: ${JSON.stringify(res.data)}`);
-      setShowToast(true);
+      setToast({ variant: 'success', text: 'Order placed. Response: ' + JSON.stringify(resp.data) });
     } catch (err) {
-      setToastMsg(`Error placing order: ${err?.response?.data ? JSON.stringify(err.response.data) : err?.message}`);
-      setShowToast(true);
+      const r = err?.response;
+      const msg =
+        r?.data?.message || (typeof r?.data === 'string' ? r.data : null) || err.message || 'Request failed';
+      setToast({ variant: 'danger', text: 'Error: ' + msg });
     } finally {
       setBusy(false);
     }
   };
 
-  const onReset = () => {
+  const resetAll = () => {
+    try {
+      localStorage.removeItem(FORM_STORAGE_KEY);
+    } catch {}
     setAction('BUY');
-    setProductType('INTRADAY');
+    setProductType('VALUEPLUS');
     setOrderType('LIMIT');
-    setOrderDuration('DAY');
-    setExchange('NSE');
-    setSymbol('');
-    setSymbolInput('');
-    setPrice('');
-    setTriggerPrice('');
-    setDisclosedQty('');
-    setQty('1');
-    setQtyMode('manual');
+    setQtySelection('manual');
     setGroupAcc(false);
     setDiffQty(false);
-    setMultiplierEnabled(false);
+    setMultiplier(false);
+    setQty('1');
+    setExchange('NSE');
+    setSymbol(null);
+    setPrice(0);
+    setTrigPrice(0);
+    setDisclosedQty(0);
+    setTimeForce('DAY');
+    setAmo(false);
     setSelectedClients([]);
     setSelectedGroups([]);
     setPerClientQty({});
@@ -322,289 +461,346 @@ export default function TradeForm() {
   };
 
   return (
-    <Container fluid className="py-3">
-      <Card className="p-3">
-        <Form onSubmit={onSubmit}>
-          <Row className="mb-2">
-            <Col md={12}>
-              <strong>Action</strong>
-              <div className="d-flex gap-3 mt-1">
+    <Card className="shadow-sm cardPad blueTone">
+      <Form onSubmit={submit}>
+        {/* Action */}
+        <div className="formSection">
+          <Row className="g-2 align-items-center">
+            <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
+              <Form.Label className="mb-0 fw-semibold">Action</Form.Label>
+              {['BUY', 'SELL'].map((v) => (
                 <Form.Check
+                  key={v}
                   inline
                   type="radio"
-                  label="BUY"
-                  checked={action === 'BUY'}
-                  onChange={() => setAction('BUY')}
+                  name="action"
+                  id={`action_${v}`}
+                  label={v}
+                  checked={action === v}
+                  onChange={() => setAction(v)}
                 />
+              ))}
+            </Col>
+          </Row>
+        </div>
+
+        {/* Product */}
+        <div className="formSection">
+          <Row className="g-2 align-items-center">
+            <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
+              <Form.Label className="mb-0 fw-semibold">Product</Form.Label>
+              {PRODUCT_TYPES.map((pt) => (
                 <Form.Check
+                  key={pt.value}
                   inline
                   type="radio"
-                  label="SELL"
-                  checked={action === 'SELL'}
-                  onChange={() => setAction('SELL')}
+                  name="productType"
+                  id={`product_${pt.value}`}
+                  label={pt.label}
+                  checked={productType === pt.value}
+                  onChange={() => setProductType(pt.value)}
                 />
-              </div>
+              ))}
             </Col>
           </Row>
+        </div>
 
-          <hr />
-
-          <Row className="mb-2">
-            <Col md={12}>
-              <strong>Product</strong>
-              <div className="d-flex flex-wrap gap-3 mt-1">
-                {['INTRADAY', 'DELIVERY', 'NORMAL', 'SELLFROMDP', 'BTST', 'MTF'].map(p => (
-                  <Form.Check
-                    key={p}
-                    inline
-                    type="radio"
-                    label={p}
-                    checked={productType === p}
-                    onChange={() => setProductType(p)}
-                  />
-                ))}
-              </div>
+        {/* Order Type */}
+        <div className="formSection">
+          <Row className="g-2 align-items-center">
+            <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
+              <Form.Label className="mb-0 fw-semibold">Order Type</Form.Label>
+              {ORDER_TYPES.map((ot) => (
+                <Form.Check
+                  key={ot.value}
+                  inline
+                  type="radio"
+                  name="orderType"
+                  id={`ordertype_${ot.value}`}
+                  label={ot.label}
+                  checked={orderType === ot.value}
+                  onChange={() => setOrderType(ot.value)}
+                />
+              ))}
             </Col>
           </Row>
+        </div>
 
-          <hr />
-
-          <Row className="mb-2">
-            <Col md={12}>
-              <strong>Order Type</strong>
-              <div className="d-flex gap-3 mt-1">
-                {['LIMIT', 'MARKET', 'STOPLOSS', 'SL_MARKET'].map(o => (
-                  <Form.Check
-                    key={o}
-                    inline
-                    type="radio"
-                    label={o}
-                    checked={orderType === o}
-                    onChange={() => setOrderType(o)}
-                  />
-                ))}
-              </div>
+        {/* Clients / Groups */}
+        <div className="formSection">
+          <Row>
+            <Col xs={12}>
+              {!groupAcc ? (
+                <>
+                  <Form.Label className="label-tight">Select Clients</Form.Label>
+                  <Form.Select
+                    multiple
+                    size={8}
+                    value={selectedClients}
+                    onChange={(e) =>
+                      setSelectedClients(Array.from(e.target.selectedOptions).map((o) => o.value))
+                    }
+                  >
+                    {(clients || []).map((c) => (
+                      <option key={`${c.broker || ''}:${c.client_id}`} value={c.client_id}>
+                        {c.name} : {c.client_id}
+                      </option>
+                    ))}
+                  </Form.Select>
+                </>
+              ) : (
+                <>
+                  <Form.Label className="label-tight">Select Groups</Form.Label>
+                  <div className="border rounded p-2">
+                    {groups.length === 0 ? (
+                      <div className="text-muted">No groups found.</div>
+                    ) : (
+                      groups.map((g) => (
+                        <Form.Check
+                          key={g.group_name}
+                          type="checkbox"
+                          id={`group_${g.group_name}`}
+                          name="groupsPick"
+                          label={`${g.group_name} (${g.no_of_clients} clients, x${g.multiplier})`}
+                          checked={selectedGroups.includes(g.group_name)}
+                          onChange={(e) => {
+                            const chk = e.target.checked;
+                            setSelectedGroups((prev) =>
+                              chk ? [...prev, g.group_name] : prev.filter((x) => x !== g.group_name)
+                            );
+                          }}
+                        />
+                      ))
+                    )}
+                  </div>
+                </>
+              )}
             </Col>
           </Row>
+        </div>
 
-          <hr />
-
-          <Row className="mb-3">
-            <Col md={12}>
-              <strong>Select Clients</strong>
+        {/* Details */}
+        <div className="formSection">
+          {/* Qty / Entity */}
+          <Row className="g-2 mb-2 align-items-end">
+            <Col md={5}>
+              <Form.Label className="label-tight">Qty</Form.Label>
               <Form.Control
-                as="select"
-                multiple
-                value={selectedClients}
-                onChange={(e) => {
-                  const options = Array.from(e.target.selectedOptions).map(o => o.value);
-                  setSelectedClients(options);
-                }}
-                disabled={groupAcc}
-                style={{ height: 120 }}
-              >
-                {(clients || []).map(c => (
-                  <option key={c._key || c.client_id} value={c._key || c.client_id}>
-                    {c.name} : {c.userid || c.client_id}
-                  </option>
-                ))}
-              </Form.Control>
-              {groupAcc && <Form.Text muted>Client selection disabled when Group Acc is enabled.</Form.Text>}
-            </Col>
-          </Row>
-
-          <Row className="mb-3">
-            <Col md={4}>
-              <strong>Qty</strong>
-              <Form.Control
-                type="number"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                disabled={qtySelection === 'auto'}
                 value={qty}
-                min="1"
-                onChange={(e) => setQty(e.target.value)}
-                disabled={!canUseSingleQty}
+                onChange={(e) => setQty(onlyDigits(e.target.value))}
+                onBlur={() => setQty(String(Math.max(1, parseInt(qty || '1', 10) || 1)))}
               />
             </Col>
 
-            <Col md={8}>
-              <div className="d-flex align-items-center flex-wrap gap-4 mt-4">
-                <div>
-                  <strong>Entity</strong>
-                  <div className="d-flex gap-3">
-                    <Form.Check
-                      type="checkbox"
-                      label="Group Acc"
-                      checked={groupAcc}
-                      onChange={(e) => {
-                        const v = e.target.checked;
-                        setGroupAcc(v);
-                        if (v) setSelectedClients([]);
-                      }}
-                    />
-                    <Form.Check
-                      type="checkbox"
-                      label="Diff. Qty."
-                      checked={diffQty}
-                      onChange={(e) => setDiffQty(e.target.checked)}
-                    />
-                    <Form.Check
-                      type="checkbox"
-                      label="Multiplier"
-                      checked={multiplierEnabled}
-                      onChange={(e) => setMultiplierEnabled(e.target.checked)}
-                    />
-                  </div>
-                </div>
+            <Col md={7}>
+              <div className="d-flex align-items-center flex-wrap gap-3 mb-1">
+                <Form.Label className="mb-0 fw-semibold">Entity</Form.Label>
+                <Form.Check
+                  inline
+                  type="checkbox"
+                  id="entity_groupAcc"
+                  name="entity_groupAcc"
+                  label="Group Acc"
+                  checked={groupAcc}
+                  onChange={(e) => setGroupAcc(e.target.checked)}
+                />
+                <Form.Check
+                  inline
+                  type="checkbox"
+                  id="entity_diffQty"
+                  name="entity_diffQty"
+                  label="Diff. Qty."
+                  checked={diffQty}
+                  onChange={(e) => setDiffQty(e.target.checked)}
+                />
+                <Form.Check
+                  inline
+                  type="checkbox"
+                  id="entity_multiplier"
+                  name="entity_multiplier"
+                  label="Multiplier"
+                  checked={multiplier}
+                  onChange={(e) => setMultiplier(e.target.checked)}
+                />
+              </div>
 
-                <div>
-                  <strong>Qty Mode</strong>
-                  <div className="d-flex gap-3">
-                    <Form.Check
-                      inline
-                      type="radio"
-                      label="Manual"
-                      checked={qtyMode === 'manual'}
-                      onChange={() => setQtyMode('manual')}
-                    />
-                    <Form.Check
-                      inline
-                      type="radio"
-                      label="Auto Calculate"
-                      checked={qtyMode === 'auto'}
-                      onChange={() => setQtyMode('auto')}
-                    />
-                  </div>
-                </div>
+              <div className="d-flex align-items-center flex-wrap gap-3">
+                <Form.Label className="mb-0 fw-semibold">Qty Mode</Form.Label>
+                <Form.Check
+                  inline
+                  type="radio"
+                  name="qtySel"
+                  id="qtySel_manual"
+                  label="Manual"
+                  checked={qtySelection === 'manual'}
+                  onChange={() => setQtySelection('manual')}
+                />
+                <Form.Check
+                  inline
+                  type="radio"
+                  name="qtySel"
+                  id="qtySel_auto"
+                  label="Auto Calculate"
+                  checked={qtySelection === 'auto'}
+                  onChange={() => setQtySelection('auto')}
+                />
               </div>
             </Col>
           </Row>
 
-          {diffQty && !groupAcc && selectedClients.length > 0 && (
-            <Row className="mb-3">
-              <Col md={12}>
-                <strong>Per Client Qty</strong>
-                <Table bordered size="sm" className="mt-2">
-                  <thead>
-                    <tr>
-                      <th>Client</th>
-                      <th style={{ width: 180 }}>Qty</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedClients.map((cid) => (
-                      <tr key={cid}>
-                        <td>{cid}</td>
-                        <td>
-                          <Form.Control
-                            type="number"
-                            min="1"
-                            value={perClientQty[cid] ?? '1'}
-                            onChange={(e) =>
-                              setPerClientQty((p) => ({ ...p, [cid]: e.target.value }))
-                            }
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </Table>
-              </Col>
-            </Row>
-          )}
-
-          <Row className="mb-3">
-            <Col md={4}>
-              <strong>Exchange</strong>
-              <Form.Select value={exchange} onChange={(e) => setExchange(e.target.value)}>
-                <option value="NSE">NSE</option>
-                <option value="BSE">BSE</option>
-                <option value="NFO">NFO</option>
-                <option value="MCX">MCX</option>
+          {/* Exchange / Symbol */}
+          <Row className="g-2 mb-2 align-items-end">
+            <Col md={5}>
+              <Form.Label className="label-tight">Exchange</Form.Label>
+              <Form.Select value={exchange} onChange={(e) => setExchange(e.target.value.toUpperCase())}>
+                {EXCHANGES.map((x) => (
+                  <option key={x} value={x}>
+                    {x}
+                  </option>
+                ))}
               </Form.Select>
             </Col>
 
-            <Col md={8}>
-              <strong>Symbol</strong>
-              <Form.Control
-                value={symbolInput}
-                onChange={(e) => setSymbolInput(e.target.value)}
+            <Col md={7}>
+              <Form.Label className="label-tight">Symbol</Form.Label>
+              <AsyncSelect
+                cacheOptions
+                defaultOptions={false}
+                loadOptions={loadSymbolOptions}
+                value={symbol}
+                onChange={setSymbol}
                 placeholder="Type to search symbol..."
-                list="symbol-suggestions"
               />
-              <datalist id="symbol-suggestions">
-                {(symbolSuggestions || []).map((s, idx) => (
-                  <option
-                    key={`${s.symbol || s}-${idx}`}
-                    value={s.symbol || s}
-                    onClick={() => setSymbol(s.symbol || s)}
+            </Col>
+          </Row>
+
+          {/* Price / Trigger / Disclosed */}
+          <Row className="g-2 align-items-end">
+            <Col md={5}>
+              <Form.Label className="label-tight">Price</Form.Label>
+              <Form.Control
+                type="number"
+                step="0.01"
+                value={orderType === 'MARKET' ? 0 : price}
+                disabled={orderType === 'MARKET'}
+                onChange={(e) => setPrice(e.target.value)}
+              />
+            </Col>
+
+            <Col md={7}>
+              <Row className="g-2">
+                <Col md={6}>
+                  <Form.Label className="label-tight">Trig. Price</Form.Label>
+                  <Form.Control
+                    type="number"
+                    step="0.01"
+                    value={trigPrice}
+                    onChange={(e) => setTrigPrice(e.target.value)}
+                    disabled={!isStopOrder}
                   />
-                ))}
-              </datalist>
-              <div className="mt-1">
-                <Form.Text muted>Selected: {symbol || '-'}</Form.Text>
-              </div>
-              <Button
-                size="sm"
-                className="mt-2"
-                variant="outline-secondary"
-                onClick={() => setSymbol(symbolInput)}
-              >
-                Use "{symbolInput}"
+                </Col>
+                <Col md={6}>
+                  <Form.Label className="label-tight">Disclosed Qty</Form.Label>
+                  <Form.Control type="number" value={disclosedQty} onChange={(e) => setDisclosedQty(e.target.value)} />
+                </Col>
+              </Row>
+            </Col>
+          </Row>
+        </div>
+
+        {/* Duration */}
+        <div className="formSection">
+          <Row className="g-2 align-items-center">
+            <Col md="auto" className="d-flex align-items-center flex-wrap gap-3">
+              <Form.Label className="mb-0">Order Duration</Form.Label>
+              {['DAY', 'IOC'].map((tf) => (
+                <Form.Check
+                  key={tf}
+                  inline
+                  type="radio"
+                  name="timeForce"
+                  id={`timeForce_${tf}`}
+                  label={tf}
+                  checked={timeForce === tf}
+                  onChange={() => setTimeForce(tf)}
+                />
+              ))}
+              <Form.Check
+                inline
+                type="checkbox"
+                id="amo_order"
+                name="amo_order"
+                label="AMO Order"
+                checked={amo}
+                onChange={(e) => setAmo(e.target.checked)}
+              />
+            </Col>
+          </Row>
+        </div>
+
+        {/* Buttons */}
+        <Row className="mt-2">
+          <Col className="text-start">
+            <div className="btn-nudge">
+              <Button type="submit" variant={action === 'BUY' ? 'success' : 'danger'} disabled={busy}>
+                {busy ? <Spinner size="sm" animation="border" className="me-2" /> : null}
+                {action}
+              </Button>{' '}
+              <Button type="button" variant="secondary" onClick={resetAll}>
+                Reset
               </Button>
-            </Col>
-          </Row>
+            </div>
+          </Col>
+        </Row>
 
-          <Row className="mb-3">
-            <Col md={4}>
-              <strong>Price</strong>
-              <Form.Control value={price} onChange={(e) => setPrice(e.target.value)} />
-            </Col>
-            <Col md={4}>
-              <strong>Trig. Price</strong>
-              <Form.Control value={triggerPrice} onChange={(e) => setTriggerPrice(e.target.value)} />
-            </Col>
-            <Col md={4}>
-              <strong>Disclosed Qty</strong>
-              <Form.Control value={disclosedQty} onChange={(e) => setDisclosedQty(e.target.value)} />
-            </Col>
-          </Row>
-
-          <Row className="mb-3">
-            <Col md={12}>
-              <strong>Order Duration</strong>
-              <div className="d-flex gap-3 mt-1">
-                {['DAY', 'IOC', 'AMO Order'].map(d => (
-                  <Form.Check
-                    key={d}
-                    inline
-                    type="radio"
-                    label={d}
-                    checked={orderDuration === (d === 'AMO Order' ? 'AMO' : d)}
-                    onChange={() => setOrderDuration(d === 'AMO Order' ? 'AMO' : d)}
-                  />
-                ))}
-              </div>
-            </Col>
-          </Row>
-
-          <div className="d-flex gap-2">
-            <Button type="submit" variant="success" disabled={busy}>
-              {busy ? 'Placing...' : action}
-            </Button>
-            <Button type="button" variant="secondary" onClick={onReset} disabled={busy}>
-              Reset
-            </Button>
-          </div>
-        </Form>
-
-        {showToast && (
-          <Alert variant="success" className="mt-3 d-flex justify-content-between align-items-center">
-            <div>{toastMsg}</div>
-            <Button variant="outline-secondary" size="sm" onClick={() => setShowToast(false)}>
-              ✕
-            </Button>
+        {toast && (
+          <Alert variant={toast.variant} onClose={() => setToast(null)} dismissible className="mt-3">
+            {toast.text}
           </Alert>
         )}
-      </Card>
-    </Container>
+      </Form>
+
+      <style jsx>{`
+        .cardPad {
+          padding: 1rem 2.5rem 2.75rem;
+        }
+        @media (min-width: 992px) {
+          .cardPad {
+            padding: 1.25rem 2.75rem 3.25rem;
+          }
+        }
+        .blueTone {
+          background: linear-gradient(180deg, #f9fbff 0%, #f3f7ff 100%);
+          border: 1px solid #d5e6ff;
+          box-shadow: 0 0 0 6px rgba(49, 132, 253, 0.12);
+          border-radius: 8px;
+        }
+        .formSection {
+          padding-block: 6px;
+          margin: 0 16px 8px;
+          border-bottom: 1px dashed #d7e3ff;
+        }
+        .formSection:last-of-type {
+          border-bottom: 0;
+          margin-bottom: 0;
+          padding-bottom: 0;
+        }
+        .label-tight {
+          margin-bottom: 4px;
+        }
+        :global(input[type='radio']),
+        :global(input[type='checkbox']) {
+          accent-color: #0d6efd;
+        }
+        .btn-nudge {
+          margin-left: 3rem;
+          padding-bottom: 0.25rem;
+        }
+      `}</style>
+    </Card>
   );
 }
