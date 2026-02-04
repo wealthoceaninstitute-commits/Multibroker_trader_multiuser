@@ -1,15 +1,48 @@
-
-// components/TradeForm.jsx — stable radios, canonical order types, validations
+// components/TradeForm.jsx — multi-user safe: fetch logged-in user's clients/groups (UI unchanged)
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import {
-  Button, Col, Form, Row, Alert, Card, Spinner,
-} from 'react-bootstrap';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Col, Form, Row, Alert, Card, Spinner } from 'react-bootstrap';
 import AsyncSelect from 'react-select/async';
 import api from './api';
 
-const FORM_STORAGE_KEY = 'woi-trade-form-v1';
+const FORM_STORAGE_KEY_BASE = 'woi-trade-form-v1';
+const LS_KEY_USERID = 'mb_logged_in_userid_v1';
+
+// ---------- user detection (same idea as Clients.jsx) ----------
+// 1) Prefer navbar text: "Welcome, <user>"
+// 2) Fallback to localStorage
+const detectUserFromWelcomeText = () => {
+  if (typeof window === 'undefined') return '';
+  try {
+    const txt = document.body?.innerText || '';
+    const m = txt.match(/Welcome,\s*([^\s]+)/i);
+    if (m && m[1]) return String(m[1]).trim();
+  } catch {}
+  return '';
+};
+
+const readLSRaw = (k) => {
+  try {
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+};
+
+const writeLSRaw = (k, v) => {
+  try {
+    localStorage.setItem(k, String(v ?? ''));
+  } catch {}
+};
+
+const safeJson = async (r) => {
+  try {
+    return await r.json();
+  } catch {
+    return null;
+  }
+};
 
 const onlyDigits = (v) => (v ?? '').replace(/[^\d]/g, '');
 const toIntOr = (v, fallback = 1) => {
@@ -21,8 +54,8 @@ const toIntOr = (v, fallback = 1) => {
 const ORDER_TYPES = [
   { value: 'LIMIT', label: 'LIMIT' },
   { value: 'MARKET', label: 'MARKET' },
-  { value: 'STOPLOSS', label: 'STOPLOSS' },     // Motilal prefers STOPLOSS
-  { value: 'SL_MARKET', label: 'SL_MARKET' },   // Stoploss-Market
+  { value: 'STOPLOSS', label: 'STOPLOSS' }, // Motilal prefers STOPLOSS
+  { value: 'SL_MARKET', label: 'SL_MARKET' }, // Stoploss-Market
 ];
 
 const PRODUCT_TYPES = [
@@ -37,11 +70,80 @@ const PRODUCT_TYPES = [
 const EXCHANGES = ['NSE', 'BSE', 'NSEFO', 'NSECD', 'NCDEX', 'MCX', 'BSEFO', 'BSECD'];
 
 export default function TradeForm() {
+  // ---- logged-in user (auto) ----
+  const [userId, setUserId] = useState('');
+  const userTouchedRef = useRef(false);
+
+  const setUserIdFromSession = (next) => {
+    const v = String(next || '').trim();
+    if (!v) return;
+    setUserId(v);
+    writeLSRaw(LS_KEY_USERID, v);
+  };
+
+  const getUid = () => {
+    const w = detectUserFromWelcomeText();
+    if (w) {
+      if (!userTouchedRef.current && w !== userId) setUserIdFromSession(w);
+      return w;
+    }
+    return String(userId || '').trim();
+  };
+
+  // On mount: hydrate uid (welcome -> LS) and keep tracking welcome changes
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const welcome = detectUserFromWelcomeText();
+    if (welcome) {
+      setUserIdFromSession(welcome);
+    } else {
+      const ls = (readLSRaw(LS_KEY_USERID) || '').trim();
+      if (ls) setUserId(ls);
+    }
+
+    // quick retry (hydration delay)
+    let tries = 0;
+    const t = setInterval(() => {
+      tries += 1;
+      const w = detectUserFromWelcomeText();
+      if (w && !userTouchedRef.current) {
+        setUserIdFromSession(w);
+        clearInterval(t);
+      }
+      if (tries >= 16) clearInterval(t); // ~8s
+    }, 500);
+
+    // observe navbar/body updates (login switch)
+    const applyWelcome = () => {
+      const w = detectUserFromWelcomeText();
+      if (!w) return;
+      if (!userTouchedRef.current && w !== userId) setUserIdFromSession(w);
+    };
+
+    const obs = new MutationObserver(() => applyWelcome());
+    try {
+      obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+    } catch {}
+
+    return () => {
+      clearInterval(t);
+      obs.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // user-scoped local storage key (prevents cross-user mixing)
+  const FORM_STORAGE_KEY = useMemo(() => {
+    const uid = String(userId || '').trim();
+    return uid ? `${FORM_STORAGE_KEY_BASE}::${uid}` : FORM_STORAGE_KEY_BASE;
+  }, [userId]);
+
   // core state
-  const [action, setAction] = useState('BUY');                 // BUY | SELL
+  const [action, setAction] = useState('BUY'); // BUY | SELL
   const [productType, setProductType] = useState('VALUEPLUS'); // intraday default
-  const [orderType, setOrderType] = useState('LIMIT');         // canonical value
-  const [qtySelection, setQtySelection] = useState('manual');  // manual | auto
+  const [orderType, setOrderType] = useState('LIMIT'); // canonical value
+  const [qtySelection, setQtySelection] = useState('manual'); // manual | auto
 
   const [groupAcc, setGroupAcc] = useState(false);
   const [diffQty, setDiffQty] = useState(false);
@@ -68,7 +170,7 @@ export default function TradeForm() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
 
-  // ---------- load from localStorage ----------
+  // ---------- load from localStorage (scoped by user) ----------
   useEffect(() => {
     try {
       const raw = localStorage.getItem(FORM_STORAGE_KEY);
@@ -98,50 +200,148 @@ export default function TradeForm() {
       setSelectedGroups(s.selectedGroups ?? []);
       setPerClientQty(s.perClientQty ?? {});
       setPerGroupQty(s.perGroupQty ?? {});
-    } catch {/* ignore */}
-  }, []);
+    } catch {
+      /* ignore */
+    }
+  }, [FORM_STORAGE_KEY]);
 
   // ---------- persist to localStorage ----------
   useEffect(() => {
     const snapshot = {
-      action, productType, orderType, qtySelection,
-      groupAcc, diffQty, multiplier,
-      qty, exchange, symbol, price, trigPrice, disclosedQty,
-      timeForce, amo,
-      selectedClients, selectedGroups,
-      perClientQty, perGroupQty,
+      action,
+      productType,
+      orderType,
+      qtySelection,
+      groupAcc,
+      diffQty,
+      multiplier,
+      qty,
+      exchange,
+      symbol,
+      price,
+      trigPrice,
+      disclosedQty,
+      timeForce,
+      amo,
+      selectedClients,
+      selectedGroups,
+      perClientQty,
+      perGroupQty,
     };
-    try { localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(snapshot)); } catch {}
+    try {
+      localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify(snapshot));
+    } catch {}
   }, [
-    action, productType, orderType, qtySelection,
-    groupAcc, diffQty, multiplier,
-    qty, exchange, symbol, price, trigPrice, disclosedQty,
-    timeForce, amo,
-    selectedClients, selectedGroups,
-    perClientQty, perGroupQty,
+    FORM_STORAGE_KEY,
+    action,
+    productType,
+    orderType,
+    qtySelection,
+    groupAcc,
+    diffQty,
+    multiplier,
+    qty,
+    exchange,
+    symbol,
+    price,
+    trigPrice,
+    disclosedQty,
+    timeForce,
+    amo,
+    selectedClients,
+    selectedGroups,
+    perClientQty,
+    perGroupQty,
   ]);
 
-  // ---------- initial data ----------
-  useEffect(() => {
-    api.get('/get_clients').then(res => setClients(res.data?.clients || [])).catch(() => {});
-    api.get('/groups').then(res => {
-      const normalized = (res.data?.groups || []).map(g => ({
+  // ---------- fetch clients/groups for logged-in user ----------
+  const normalizeClientRow = (c) => {
+    const client_id = c.client_id || c.userid || c.user_id || '';
+    return {
+      ...c,
+      client_id,
+      name: c.name || c.display_name || client_id,
+      broker: c.broker || c.type || '',
+    };
+  };
+
+  const fetchClientsForUser = async (uid) => {
+    if (!uid) {
+      setClients([]);
+      return;
+    }
+
+    // Try multiuser endpoint first: /clients?user_id=...
+    try {
+      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_BASE || ''}/clients?user_id=${encodeURIComponent(uid)}`, {
+        cache: 'no-store',
+        headers: { 'x-user-id': uid },
+      });
+      if (resp.ok) {
+        const j = await safeJson(resp);
+        const arr = Array.isArray(j) ? j : j?.clients || [];
+        setClients(arr.map(normalizeClientRow));
+        return;
+      }
+    } catch {
+      /* fallthrough */
+    }
+
+    // Fallback: legacy endpoint via api client (if your api.js injects baseURL)
+    try {
+      const res = await api.get('/get_clients', {
+        headers: { 'x-user-id': uid },
+        params: { user_id: uid },
+      });
+      const arr = res.data?.clients || [];
+      setClients(arr.map(normalizeClientRow));
+    } catch {
+      setClients([]);
+    }
+  };
+
+  const fetchGroupsForUser = async (uid) => {
+    // If groups are global, this still works. If user-specific, header helps.
+    try {
+      const res = await api.get('/groups', {
+        headers: uid ? { 'x-user-id': uid } : undefined,
+        params: uid ? { user_id: uid } : undefined,
+      });
+
+      const rawGroups = res.data?.groups || [];
+      const normalized = rawGroups.map((g) => ({
         group_name: g.name || g.group_name || g.id,
         no_of_clients: (g.members || g.clients || []).length,
         multiplier: Number(g.multiplier ?? 1),
-        client_names: (g.members || g.clients || []).map(m => m.name || m),
+        client_names: (g.members || g.clients || []).map((m) => m.name || m),
       }));
       setGroups(normalized);
-    }).catch(() => {});
-  }, []);
+    } catch {
+      setGroups([]);
+    }
+  };
+
+  // Initial + whenever logged-in user changes
+  useEffect(() => {
+    const uid = getUid();
+    fetchClientsForUser(uid);
+    fetchGroupsForUser(uid);
+
+    // Important: clear selections when user changes (prevents placing orders for other user)
+    setSelectedClients([]);
+    setSelectedGroups([]);
+    setPerClientQty({});
+    setPerGroupQty({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   // ---------- symbol search ----------
   const loadSymbolOptions = async (inputValue) => {
     if (!inputValue) return [];
     const res = await api.get('/search_symbols', { params: { q: inputValue, exchange } });
     const results = res.data?.results || [];
-    return results.map(r => ({
-      value: r.id ?? r.token ?? r.symbol ?? r.text, // stable machine value
+    return results.map((r) => ({
+      value: r.id ?? r.token ?? r.symbol ?? r.text,
       label: r.text ?? r.label ?? String(r.id),
     }));
   };
@@ -157,30 +357,24 @@ export default function TradeForm() {
 
   // ---------- validations ----------
   const validateBeforeSubmit = () => {
-    if (!groupAcc && selectedClients.length === 0) {
-      return 'Please select at least one client.';
-    }
-    if (groupAcc && selectedGroups.length === 0) {
-      return 'Please select at least one group.';
-    }
-    if (!symbol?.value) {
-      return 'Please select a symbol from the dropdown.';
-    }
-    if (orderType === 'MARKET' && Number(price) !== 0) {
-      setPrice(0); // normalize silently
-    }
-    if (isStopOrder && Number(trigPrice) <= 0) {
-      return 'Trigger price is required for STOPLOSS / SL_MARKET orders.';
-    }
-    if (toIntOr(qty, 0) <= 0 && canUseSingleQty) {
-      return 'Quantity must be a positive number.';
-    }
+    if (!groupAcc && selectedClients.length === 0) return 'Please select at least one client.';
+    if (groupAcc && selectedGroups.length === 0) return 'Please select at least one group.';
+    if (!symbol?.value) return 'Please select a symbol from the dropdown.';
+    if (orderType === 'MARKET' && Number(price) !== 0) setPrice(0);
+    if (isStopOrder && Number(trigPrice) <= 0) return 'Trigger price is required for STOPLOSS / SL_MARKET orders.';
+    if (toIntOr(qty, 0) <= 0 && canUseSingleQty) return 'Quantity must be a positive number.';
     return null;
   };
 
   // ---------- submit ----------
   const submit = async (e) => {
     e.preventDefault();
+
+    const uid = getUid();
+    if (!uid) {
+      setToast({ variant: 'warning', text: 'Logged-in user not detected. Please re-login.' });
+      return;
+    }
 
     const errMsg = validateBeforeSubmit();
     if (errMsg) {
@@ -189,25 +383,31 @@ export default function TradeForm() {
     }
 
     const safeSingleQty = canUseSingleQty ? toIntOr(qty, 1) : 0;
-    const safePerClientQty = (!groupAcc && diffQty)
-      ? Object.fromEntries(selectedClients.map(cid => [cid, toIntOr(perClientQty[cid], 1)]))
-      : {};
-    const safePerGroupQty = (groupAcc && diffQty)
-      ? Object.fromEntries(selectedGroups.map(gn => [gn, toIntOr(perGroupQty[gn], 1)]))
-      : {};
+    const safePerClientQty =
+      !groupAcc && diffQty
+        ? Object.fromEntries(selectedClients.map((cid) => [cid, toIntOr(perClientQty[cid], 1)]))
+        : {};
+    const safePerGroupQty =
+      groupAcc && diffQty
+        ? Object.fromEntries(selectedGroups.map((gn) => [gn, toIntOr(perGroupQty[gn], 1)]))
+        : {};
 
     setBusy(true);
     try {
       const payload = {
+        // user scoping (backend can use either header or this field)
+        user_id: uid,
+
         groupacc: groupAcc,
         groups: selectedGroups,
         clients: selectedClients,
-        action,                                              // BUY/SELL
-        ordertype: orderType,                                // LIMIT/MARKET/STOPLOSS/SL_MARKET
-        producttype: productType,                            // canonical
-        orderduration: timeForce,                            // DAY/IOC
-        exchange,                                            // e.g., NSE/NSEFO
-        symbol: symbol?.value || '',                         // machine value
+
+        action,
+        ordertype: orderType,
+        producttype: productType,
+        orderduration: timeForce,
+        exchange,
+        symbol: symbol?.value || '',
         price: Number(price) || 0,
         triggerprice: Number(trigPrice) || 0,
         disclosedquantity: Number(disclosedQty) || 0,
@@ -220,14 +420,15 @@ export default function TradeForm() {
         multiplier,
       };
 
-      const resp = await api.post('/place_order', payload);
+      const resp = await api.post('/place_order', payload, {
+        headers: { 'x-user-id': uid },
+      });
+
       setToast({ variant: 'success', text: 'Order placed. Response: ' + JSON.stringify(resp.data) });
     } catch (err) {
       const r = err?.response;
-      const msg = r?.data?.message
-        || (typeof r?.data === 'string' ? r.data : null)
-        || err.message
-        || 'Request failed';
+      const msg =
+        r?.data?.message || (typeof r?.data === 'string' ? r.data : null) || err.message || 'Request failed';
       setToast({ variant: 'danger', text: 'Error: ' + msg });
     } finally {
       setBusy(false);
@@ -235,7 +436,9 @@ export default function TradeForm() {
   };
 
   const resetAll = () => {
-    try { localStorage.removeItem(FORM_STORAGE_KEY); } catch {}
+    try {
+      localStorage.removeItem(FORM_STORAGE_KEY);
+    } catch {}
     setAction('BUY');
     setProductType('VALUEPLUS');
     setOrderType('LIMIT');
@@ -265,7 +468,7 @@ export default function TradeForm() {
           <Row className="g-2 align-items-center">
             <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
               <Form.Label className="mb-0 fw-semibold">Action</Form.Label>
-              {['BUY','SELL'].map(v => (
+              {['BUY', 'SELL'].map((v) => (
                 <Form.Check
                   key={v}
                   inline
@@ -286,7 +489,7 @@ export default function TradeForm() {
           <Row className="g-2 align-items-center">
             <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
               <Form.Label className="mb-0 fw-semibold">Product</Form.Label>
-              {PRODUCT_TYPES.map(pt => (
+              {PRODUCT_TYPES.map((pt) => (
                 <Form.Check
                   key={pt.value}
                   inline
@@ -307,7 +510,7 @@ export default function TradeForm() {
           <Row className="g-2 align-items-center">
             <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
               <Form.Label className="mb-0 fw-semibold">Order Type</Form.Label>
-              {ORDER_TYPES.map(ot => (
+              {ORDER_TYPES.map((ot) => (
                 <Form.Check
                   key={ot.value}
                   inline
@@ -334,10 +537,12 @@ export default function TradeForm() {
                     multiple
                     size={8}
                     value={selectedClients}
-                    onChange={e=>setSelectedClients(Array.from(e.target.selectedOptions).map(o=>o.value))}
+                    onChange={(e) =>
+                      setSelectedClients(Array.from(e.target.selectedOptions).map((o) => o.value))
+                    }
                   >
-                    {(clients || []).map(c => (
-                      <option key={c.client_id} value={c.client_id}>
+                    {(clients || []).map((c) => (
+                      <option key={`${c.broker || ''}:${c.client_id}`} value={c.client_id}>
                         {c.name} : {c.client_id}
                       </option>
                     ))}
@@ -347,10 +552,10 @@ export default function TradeForm() {
                 <>
                   <Form.Label className="label-tight">Select Groups</Form.Label>
                   <div className="border rounded p-2">
-                    {groups.length===0 ? (
+                    {groups.length === 0 ? (
                       <div className="text-muted">No groups found.</div>
                     ) : (
-                      groups.map(g => (
+                      groups.map((g) => (
                         <Form.Check
                           key={g.group_name}
                           type="checkbox"
@@ -358,9 +563,11 @@ export default function TradeForm() {
                           name="groupsPick"
                           label={`${g.group_name} (${g.no_of_clients} clients, x${g.multiplier})`}
                           checked={selectedGroups.includes(g.group_name)}
-                          onChange={e=>{
+                          onChange={(e) => {
                             const chk = e.target.checked;
-                            setSelectedGroups(prev => chk ? [...prev, g.group_name] : prev.filter(x=>x!==g.group_name));
+                            setSelectedGroups((prev) =>
+                              chk ? [...prev, g.group_name] : prev.filter((x) => x !== g.group_name)
+                            );
                           }}
                         />
                       ))
@@ -382,10 +589,10 @@ export default function TradeForm() {
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                disabled={qtySelection==='auto'}
+                disabled={qtySelection === 'auto'}
                 value={qty}
-                onChange={e=>setQty(onlyDigits(e.target.value))}
-                onBlur={()=>setQty(String(Math.max(1, parseInt(qty || '1', 10) || 1)))}
+                onChange={(e) => setQty(onlyDigits(e.target.value))}
+                onBlur={() => setQty(String(Math.max(1, parseInt(qty || '1', 10) || 1)))}
               />
             </Col>
 
@@ -399,7 +606,7 @@ export default function TradeForm() {
                   name="entity_groupAcc"
                   label="Group Acc"
                   checked={groupAcc}
-                  onChange={e=>setGroupAcc(e.target.checked)}
+                  onChange={(e) => setGroupAcc(e.target.checked)}
                 />
                 <Form.Check
                   inline
@@ -408,7 +615,7 @@ export default function TradeForm() {
                   name="entity_diffQty"
                   label="Diff. Qty."
                   checked={diffQty}
-                  onChange={e=>setDiffQty(e.target.checked)}
+                  onChange={(e) => setDiffQty(e.target.checked)}
                 />
                 <Form.Check
                   inline
@@ -417,7 +624,7 @@ export default function TradeForm() {
                   name="entity_multiplier"
                   label="Multiplier"
                   checked={multiplier}
-                  onChange={e=>setMultiplier(e.target.checked)}
+                  onChange={(e) => setMultiplier(e.target.checked)}
                 />
               </div>
 
@@ -429,8 +636,8 @@ export default function TradeForm() {
                   name="qtySel"
                   id="qtySel_manual"
                   label="Manual"
-                  checked={qtySelection==='manual'}
-                  onChange={()=>setQtySelection('manual')}
+                  checked={qtySelection === 'manual'}
+                  onChange={() => setQtySelection('manual')}
                 />
                 <Form.Check
                   inline
@@ -438,8 +645,8 @@ export default function TradeForm() {
                   name="qtySel"
                   id="qtySel_auto"
                   label="Auto Calculate"
-                  checked={qtySelection==='auto'}
-                  onChange={()=>setQtySelection('auto')}
+                  checked={qtySelection === 'auto'}
+                  onChange={() => setQtySelection('auto')}
                 />
               </div>
             </Col>
@@ -449,8 +656,12 @@ export default function TradeForm() {
           <Row className="g-2 mb-2 align-items-end">
             <Col md={5}>
               <Form.Label className="label-tight">Exchange</Form.Label>
-              <Form.Select value={exchange} onChange={e=>setExchange(e.target.value.toUpperCase())}>
-                {EXCHANGES.map(x => <option key={x} value={x}>{x}</option>)}
+              <Form.Select value={exchange} onChange={(e) => setExchange(e.target.value.toUpperCase())}>
+                {EXCHANGES.map((x) => (
+                  <option key={x} value={x}>
+                    {x}
+                  </option>
+                ))}
               </Form.Select>
             </Col>
 
@@ -476,7 +687,7 @@ export default function TradeForm() {
                 step="0.01"
                 value={orderType === 'MARKET' ? 0 : price}
                 disabled={orderType === 'MARKET'}
-                onChange={e=>setPrice(e.target.value)}
+                onChange={(e) => setPrice(e.target.value)}
               />
             </Col>
 
@@ -488,17 +699,13 @@ export default function TradeForm() {
                     type="number"
                     step="0.01"
                     value={trigPrice}
-                    onChange={e=>setTrigPrice(e.target.value)}
+                    onChange={(e) => setTrigPrice(e.target.value)}
                     disabled={!isStopOrder}
                   />
                 </Col>
                 <Col md={6}>
                   <Form.Label className="label-tight">Disclosed Qty</Form.Label>
-                  <Form.Control
-                    type="number"
-                    value={disclosedQty}
-                    onChange={e=>setDisclosedQty(e.target.value)}
-                  />
+                  <Form.Control type="number" value={disclosedQty} onChange={(e) => setDisclosedQty(e.target.value)} />
                 </Col>
               </Row>
             </Col>
@@ -510,7 +717,7 @@ export default function TradeForm() {
           <Row className="g-2 align-items-center">
             <Col md="auto" className="d-flex align-items-center flex-wrap gap-3">
               <Form.Label className="mb-0">Order Duration</Form.Label>
-              {['DAY','IOC'].map(tf => (
+              {['DAY', 'IOC'].map((tf) => (
                 <Form.Check
                   key={tf}
                   inline
@@ -518,8 +725,8 @@ export default function TradeForm() {
                   name="timeForce"
                   id={`timeForce_${tf}`}
                   label={tf}
-                  checked={timeForce===tf}
-                  onChange={()=>setTimeForce(tf)}
+                  checked={timeForce === tf}
+                  onChange={() => setTimeForce(tf)}
                 />
               ))}
               <Form.Check
@@ -529,7 +736,7 @@ export default function TradeForm() {
                 name="amo_order"
                 label="AMO Order"
                 checked={amo}
-                onChange={e=>setAmo(e.target.checked)}
+                onChange={(e) => setAmo(e.target.checked)}
               />
             </Col>
           </Row>
@@ -551,26 +758,48 @@ export default function TradeForm() {
         </Row>
 
         {toast && (
-          <Alert variant={toast.variant} onClose={()=>setToast(null)} dismissible className="mt-3">
+          <Alert variant={toast.variant} onClose={() => setToast(null)} dismissible className="mt-3">
             {toast.text}
           </Alert>
         )}
       </Form>
 
       <style jsx>{`
-        .cardPad { padding: 1rem 2.5rem 2.75rem; }
-        @media (min-width: 992px) { .cardPad { padding: 1.25rem 2.75rem 3.25rem; } }
+        .cardPad {
+          padding: 1rem 2.5rem 2.75rem;
+        }
+        @media (min-width: 992px) {
+          .cardPad {
+            padding: 1.25rem 2.75rem 3.25rem;
+          }
+        }
         .blueTone {
           background: linear-gradient(180deg, #f9fbff 0%, #f3f7ff 100%);
           border: 1px solid #d5e6ff;
           box-shadow: 0 0 0 6px rgba(49, 132, 253, 0.12);
           border-radius: 8px;
         }
-        .formSection { padding-block: 6px; margin: 0 16px 8px; border-bottom: 1px dashed #d7e3ff; }
-        .formSection:last-of-type { border-bottom: 0; margin-bottom: 0; padding-bottom: 0; }
-        .label-tight { margin-bottom: 4px; }
-        :global(input[type="radio"]), :global(input[type="checkbox"]) { accent-color: #0d6efd; }
-        .btn-nudge { margin-left: 3rem; padding-bottom: 0.25rem; }
+        .formSection {
+          padding-block: 6px;
+          margin: 0 16px 8px;
+          border-bottom: 1px dashed #d7e3ff;
+        }
+        .formSection:last-of-type {
+          border-bottom: 0;
+          margin-bottom: 0;
+          padding-bottom: 0;
+        }
+        .label-tight {
+          margin-bottom: 4px;
+        }
+        :global(input[type='radio']),
+        :global(input[type='checkbox']) {
+          accent-color: #0d6efd;
+        }
+        .btn-nudge {
+          margin-left: 3rem;
+          padding-bottom: 0.25rem;
+        }
       `}</style>
     </Card>
   );
