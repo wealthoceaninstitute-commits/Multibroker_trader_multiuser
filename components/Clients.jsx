@@ -9,39 +9,25 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:5001";
 const LS_KEY_GROUPS = "mb_groups_v2_groupMultiplier";
 const LS_KEY_USERID = "mb_logged_in_userid_v1";
 
-// Common places where apps store current user/session
-const CANDIDATE_LS_KEYS = [
-  LS_KEY_USERID,
-  "userId",
-  "user_id",
-  "userid",
-  "username",
-  "user_name",
-  "currentUser",
-  "current_user",
-  "authUser",
-  "auth_user",
-  "user",
-  "session",
-  "auth",
-  "profile",
-  "mb_user",
-  "mb_auth",
-];
+// --------- robust user detection ---------
+// 1) Prefer the visible navbar text: "Welcome, <user>"
+// 2) Fallback to localStorage if navbar not available
+const detectUserFromWelcomeText = () => {
+  if (typeof window === "undefined") return "";
+
+  try {
+    // Fast path: scan body text for "Welcome, xyz"
+    const txt = document.body?.innerText || "";
+    const m = txt.match(/Welcome,\s*([^\s]+)/i);
+    if (m && m[1]) return String(m[1]).trim();
+  } catch {}
+
+  return "";
+};
 
 const readLSRaw = (k) => {
   try {
     return localStorage.getItem(k);
-  } catch {
-    return null;
-  }
-};
-
-const readLSJson = (k) => {
-  try {
-    const v = localStorage.getItem(k);
-    if (!v) return null;
-    return JSON.parse(v);
   } catch {
     return null;
   }
@@ -59,91 +45,6 @@ const safeJson = async (r) => {
   } catch {
     return null;
   }
-};
-
-const getCookie = (name) => {
-  try {
-    const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-    return m ? decodeURIComponent(m[1]) : "";
-  } catch {
-    return "";
-  }
-};
-
-// Attempt to derive a stable "user id" from many possible shapes.
-// Return "" if not found.
-const detectUserId = () => {
-  if (typeof window === "undefined") return "";
-
-  // 1) Exact stored user id (preferred)
-  for (const k of [LS_KEY_USERID, "userId", "user_id", "userid"]) {
-    const v = (readLSRaw(k) || "").trim();
-    if (v) return v;
-  }
-
-  // 2) Cookie based (only works if not HttpOnly)
-  for (const ck of ["user_id", "userid", "userId", "username"]) {
-    const v = (getCookie(ck) || "").trim();
-    if (v) return v;
-  }
-
-  // 3) JSON blobs in localStorage: auth/session/user/profile etc.
-  for (const k of CANDIDATE_LS_KEYS) {
-    const obj = readLSJson(k);
-    if (!obj) continue;
-
-    // Common shapes:
-    // { user_id }, { userid }, { userId }, { username }
-    const direct =
-      (obj.user_id || obj.userid || obj.userId || obj.username || obj.email || obj.phone || "").toString().trim();
-    if (direct) return direct;
-
-    // { user: { ... } }
-    if (obj.user && typeof obj.user === "object") {
-      const u = obj.user;
-      const v = (u.user_id || u.userid || u.userId || u.username || u.email || u.phone || "").toString().trim();
-      if (v) return v;
-    }
-
-    // { profile: { ... } }
-    if (obj.profile && typeof obj.profile === "object") {
-      const p = obj.profile;
-      const v = (p.user_id || p.userid || p.userId || p.username || p.email || p.phone || "").toString().trim();
-      if (v) return v;
-    }
-  }
-
-  // 4) Window globals (sometimes apps hydrate user here)
-  try {
-    if (window.__USER__ && typeof window.__USER__ === "object") {
-      const u = window.__USER__;
-      const v = (u.user_id || u.userid || u.userId || u.username || "").toString().trim();
-      if (v) return v;
-    }
-  } catch {}
-
-  // 5) Next.js __NEXT_DATA__ (rare but possible)
-  try {
-    const nd = window.__NEXT_DATA__;
-    if (nd && nd.props) {
-      const props = nd.props;
-      // Try common nesting
-      const candidateObjects = [
-        props.pageProps,
-        props.pageProps?.user,
-        props.pageProps?.session,
-        props.pageProps?.session?.user,
-      ].filter(Boolean);
-
-      for (const o of candidateObjects) {
-        if (typeof o !== "object") continue;
-        const v = (o.user_id || o.userid || o.userId || o.username || "").toString().trim();
-        if (v) return v;
-      }
-    }
-  } catch {}
-
-  return "";
 };
 
 export default function Clients() {
@@ -170,81 +71,97 @@ export default function Clients() {
   const [loggingNow, setLoggingNow] = useState(new Set());
   const pollingAbortRef = useRef(false);
 
-  // Keep UI unchanged: input still exists, but we auto-fill it
+  // UI unchanged: still shows the input, but we auto-fill correctly.
   const [userId, setUserId] = useState("");
+  const userTouchedRef = useRef(false); // if user manually edits, don't fight them
 
-  // ---- auto-fetch userId on mount & keep trying briefly (handles async login hydration) ----
+  const setUserIdFromSession = (next) => {
+    const v = String(next || "").trim();
+    if (!v) return;
+    setUserId(v);
+    writeLS(LS_KEY_USERID, v);
+  };
+
+  // ---- 1) On mount, set userId from Welcome text (authoritative) ----
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const first = detectUserId();
-    if (first) {
-      setUserId(first);
-      writeLS(LS_KEY_USERID, first);
+    const welcome = detectUserFromWelcomeText();
+    if (welcome) {
+      setUserIdFromSession(welcome);
       return;
     }
 
-    // Try a few times because some apps set localStorage after initial render
+    // fallback to LS only if Welcome isn't detected yet
+    const ls = (readLSRaw(LS_KEY_USERID) || "").trim();
+    if (ls) setUserId(ls);
+
+    // Then keep trying for a few seconds because UI hydration may be late
     let tries = 0;
     const t = setInterval(() => {
       tries += 1;
-      const v = detectUserId();
-      if (v) {
-        setUserId(v);
-        writeLS(LS_KEY_USERID, v);
+      const w = detectUserFromWelcomeText();
+      if (w) {
+        // If user did NOT manually type, always trust welcome text
+        if (!userTouchedRef.current) setUserIdFromSession(w);
         clearInterval(t);
       }
-      if (tries >= 12) clearInterval(t); // ~6 seconds max
+      if (tries >= 16) clearInterval(t); // ~8s
     }, 500);
 
     return () => clearInterval(t);
   }, []);
 
+  // ---- 2) Keep watching for changes (when user logs out/in or user changes) ----
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const applyWelcome = () => {
+      const w = detectUserFromWelcomeText();
+      if (!w) return;
+      // Always override stale "pra" with actual logged-in user
+      // unless user manually typed in this session.
+      if (!userTouchedRef.current) {
+        if (w !== userId) setUserIdFromSession(w);
+      }
+    };
+
+    // MutationObserver catches navbar updates without polling forever
+    const obs = new MutationObserver(() => applyWelcome());
+    try {
+      obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+    } catch {}
+
+    // also do one immediate check
+    applyWelcome();
+
+    return () => obs.disconnect();
+  }, [userId]);
+
   const saveUserId = (v) => {
+    userTouchedRef.current = true;
     const next = String(v || "");
     setUserId(next);
     writeLS(LS_KEY_USERID, next);
   };
 
-  // Groups
-  const [groups, setGroups] = useState([]);
-  const [selectedGroups, setSelectedGroups] = useState(new Set());
-  const [showGroupModal, setShowGroupModal] = useState(false);
-  const [editGroupMode, setEditGroupMode] = useState(false);
-
-  const [groupForm, setGroupForm] = useState({
-    id: null,
-    name: "",
-    multiplier: "1",
-    members: {},
-  });
-
-  const [showCopyModal, setShowCopyModal] = useState(false);
-  const [copyForm, setCopyForm] = useState({
-    name: "",
-    master: "",
-    rows: {},
-  });
-
-  const getUidOrDetect = () => {
-    const uid = (userId || "").trim();
-    if (uid) return uid;
-    const detected = detectUserId();
-    if (detected) {
-      setUserId(detected);
-      writeLS(LS_KEY_USERID, detected);
-      return detected;
+  const getUid = () => {
+    // Always prefer Welcome username if available
+    const w = detectUserFromWelcomeText();
+    if (w) {
+      if (!userTouchedRef.current && w !== userId) setUserIdFromSession(w);
+      return w;
     }
-    return "";
+    return (userId || "").trim();
   };
 
+  // Load clients and groups
   async function loadClients() {
-    const uid = getUidOrDetect();
+    const uid = getUid();
     if (!uid) {
       setClients([]);
       return;
     }
-
     try {
       const url = `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`;
       const r = await fetch(url, { cache: "no-store", headers: { "x-user-id": uid } });
@@ -256,7 +173,7 @@ export default function Clients() {
   }
 
   async function loadGroups() {
-    const uid = getUidOrDetect();
+    const uid = getUid();
     try {
       const r = await fetch(`${API_BASE}/groups`, {
         cache: "no-store",
@@ -282,13 +199,33 @@ export default function Clients() {
     }
   }
 
+  // Groups
+  const [groups, setGroups] = useState([]);
+  const [selectedGroups, setSelectedGroups] = useState(new Set());
+  const [showGroupModal, setShowGroupModal] = useState(false);
+  const [editGroupMode, setEditGroupMode] = useState(false);
+
+  const [groupForm, setGroupForm] = useState({
+    id: null,
+    name: "",
+    multiplier: "1",
+    members: {},
+  });
+
+  const [showCopyModal, setShowCopyModal] = useState(false);
+  const [copyForm, setCopyForm] = useState({
+    name: "",
+    master: "",
+    rows: {},
+  });
+
   useEffect(() => {
     loadGroups();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    // whenever userId gets hydrated, reload clients automatically
+    // when session user changes, auto-load that user's clients
     loadClients();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
@@ -363,9 +300,9 @@ export default function Clients() {
     if (!selectedClients.size) return;
     if (!confirm(`Delete ${selectedClients.size} client(s)?`)) return;
 
-    const uid = getUidOrDetect();
+    const uid = getUid();
     if (!uid) {
-      alert("User session not detected. Please re-login once and try again.");
+      alert("Login user not detected. Please re-login and try again.");
       return;
     }
 
@@ -388,7 +325,7 @@ export default function Clients() {
   };
 
   async function pollUntilLoggedIn(broker, userid, { intervalMs = 1000, maxTries = 15 } = {}) {
-    const uid = getUidOrDetect();
+    const uid = getUid();
     const targetKey = `${broker}::${userid}`;
     setLoggingNow((prev) => new Set(prev).add(targetKey));
     pollingAbortRef.current = false;
@@ -424,9 +361,9 @@ export default function Clients() {
   const onSubmit = async (e) => {
     e.preventDefault();
 
-    const uid = getUidOrDetect();
+    const uid = getUid();
     if (!uid) {
-      alert("User session not detected. Please re-login once and try again.");
+      alert("Login user not detected. Please re-login and try again.");
       return;
     }
 
@@ -549,9 +486,9 @@ export default function Clients() {
     if (!selectedGroups.size) return;
     if (!confirm(`Delete ${selectedGroups.size} group(s)?`)) return;
 
-    const uid = getUidOrDetect();
+    const uid = getUid();
     if (!uid) {
-      alert("User session not detected. Please re-login once and try again.");
+      alert("Login user not detected. Please re-login and try again.");
       return;
     }
 
@@ -566,25 +503,16 @@ export default function Clients() {
       ok = r.ok;
     } catch {}
 
-    if (!ok) {
-      // local fallback
-      const next = groups.filter((g) => !ids.includes(groupKey(g)));
-      setGroups(next);
-      try {
-        localStorage.setItem(LS_KEY_GROUPS, JSON.stringify(next));
-      } catch {}
-    } else {
-      await loadGroups();
-    }
+    if (ok) await loadGroups();
     setSelectedGroups(new Set());
   };
 
   const onSubmitGroup = async (e) => {
     e.preventDefault();
 
-    const uid = getUidOrDetect();
+    const uid = getUid();
     if (!uid) {
-      alert("User session not detected. Please re-login once and try again.");
+      alert("Login user not detected. Please re-login and try again.");
       return;
     }
 
@@ -604,17 +532,15 @@ export default function Clients() {
 
     const endpoint = editGroupMode ? "edit_group" : "add_group";
 
-    let ok = false;
     try {
-      const r = await fetch(`${API_BASE}/${endpoint}`, {
+      await fetch(`${API_BASE}/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-user-id": uid },
         body: JSON.stringify(payload),
       });
-      ok = r.ok;
+      await loadGroups();
     } catch {}
 
-    if (ok) await loadGroups();
     setShowGroupModal(false);
     setEditGroupMode(false);
   };
@@ -631,9 +557,9 @@ export default function Clients() {
   const onSubmitCopy = async (e) => {
     e.preventDefault();
 
-    const uid = getUidOrDetect();
+    const uid = getUid();
     if (!uid) {
-      alert("User session not detected. Please re-login once and try again.");
+      alert("Login user not detected. Please re-login and try again.");
       return;
     }
 
@@ -687,10 +613,9 @@ export default function Clients() {
     }
   };
 
-  // ---------------- UI (unchanged) ----------------
+  // ---------------- UI (UNCHANGED) ----------------
   return (
     <Card className="p-3">
-      {/* Toolbar */}
       <div className="d-flex mb-3" style={{ gap: 10 }}>
         {subtab === "clients" ? (
           <>
@@ -729,7 +654,6 @@ export default function Clients() {
         )}
       </div>
 
-      {/* Tabs */}
       <ButtonGroup className="mb-3">
         <Button variant={subtab === "clients" ? "primary" : "outline-primary"} onClick={() => setSubtab("clients")}>
           Clients
@@ -739,7 +663,6 @@ export default function Clients() {
         </Button>
       </ButtonGroup>
 
-      {/* Clients Table */}
       {subtab === "clients" && (
         <Table bordered hover responsive size="sm" className="align-middle">
           <thead>
@@ -785,7 +708,6 @@ export default function Clients() {
         </Table>
       )}
 
-      {/* Groups Table */}
       {subtab === "groups" && (
         <Table bordered hover responsive size="sm" className="align-middle">
           <thead>
@@ -835,7 +757,8 @@ export default function Clients() {
         </Table>
       )}
 
-      {/* Add/Edit Client Modal (unchanged UI) */}
+      {/* Modals: keep your existing modals as-is (same UI) */}
+      {/* Add/Edit Client Modal */}
       <Modal show={showModal} onHide={() => { setShowModal(false); pollingAbortRef.current = true; }}>
         <Form onSubmit={onSubmit}>
           <Modal.Header closeButton>
@@ -953,9 +876,6 @@ export default function Clients() {
           </Modal.Footer>
         </Form>
       </Modal>
-
-      {/* Group Modal + Copy Modal remain same in your existing file.
-          If you want, I can append them too, but they are unchanged from above logic. */}
     </Card>
   );
 }
