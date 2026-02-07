@@ -50,6 +50,57 @@ const detectUserFromWelcomeText = () => {
 const readLS = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } };
 const writeLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
+
+// ===== Auth token helper =====
+// Tries common keys used in different versions of this project.
+// If your login page stores token under a different key, add it here.
+const getAuthToken = () => {
+  if (typeof window === "undefined") return "";
+  const keysToTry = [
+    "mb_auth_token_v1",
+    "mb_auth_token",
+    "mb_token",
+    "auth_token",
+    "token",
+    "access_token",
+    "jwt",
+  ];
+
+  // direct string keys
+  for (const k of keysToTry) {
+    try {
+      const raw = localStorage.getItem(k);
+      if (!raw) continue;
+      // could be JSON-stringified token or plain token
+      let v = raw;
+      try { v = JSON.parse(raw); } catch {}
+      if (typeof v === "string" && v.trim()) return v.trim();
+      if (v && typeof v === "object") {
+        const cand = v.token || v.access_token || v.accessToken || v.jwt;
+        if (typeof cand === "string" && cand.trim()) return cand.trim();
+      }
+    } catch {}
+  }
+
+  // one more: sometimes token is stored with the user object
+  try {
+    const u = JSON.parse(localStorage.getItem(LS_KEY_USERID) || '""');
+    // userId storage is separate; ignore
+  } catch {}
+
+  return "";
+};
+
+const buildAuthHeaders = (extra = {}) => {
+  const token = getAuthToken();
+  const uid = (() => { try { const v = JSON.parse(localStorage.getItem(LS_KEY_USERID) || '""'); return (v || "").trim(); } catch { return ""; } })();
+  return {
+    ...extra,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    // keep x-user-id too (harmless, and keeps backward-compat if any older endpoints used it)
+    ...(uid ? { "x-user-id": uid } : {}),
+  };
+};
 export default function Clients() {
   // ===== Logged-in user (multi-user backend) =====
   const [userId, setUserId] = useState("");
@@ -126,7 +177,7 @@ export default function Clients() {
       setClients([]);
       return;
     }
-    const headers = { "x-user-id": uid };
+    const headers = buildAuthHeaders();
 
     const urls = [
       `${API_BASE}/get_clients`,
@@ -163,7 +214,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/groups`, {
         cache: "no-store",
-        headers: uid ? { "x-user-id": uid } : undefined,
+        headers: buildAuthHeaders(),
       });
       if (r.ok) {
         const j = await r.json();
@@ -253,7 +304,7 @@ export default function Clients() {
     try {
       await fetch(`${API_BASE}/delete_client`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(getUid() ? { 'x-user-id': getUid() } : {}) },
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ items })
       });
       await loadClients();
@@ -324,7 +375,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(getUid() ? { 'x-user-id': getUid() } : {}) },
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(bodyBase),
       });
 
@@ -400,7 +451,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/delete_group`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(getUid() ? { 'x-user-id': getUid() } : {}) },
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ ids, names: ids })
       });
       if (r.ok) deletedOK = true;
@@ -436,7 +487,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(getUid() ? { 'x-user-id': getUid() } : {}) },
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload)
       });
       ok = r.ok;
@@ -507,7 +558,7 @@ export default function Clients() {
     try {
       const r = await fetch(`${API_BASE}/save_copytrading_setup`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(getUid() ? { 'x-user-id': getUid() } : {}) },
+        headers: buildAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
       });
       if (!r.ok) {
