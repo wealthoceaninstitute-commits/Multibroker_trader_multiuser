@@ -53,24 +53,35 @@ const writeLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } 
 
 // ===== Auth token helper =====
 // Tries common keys used in different versions of this project.
-// If your login page stores token under a different key, add it here.
-const getAuthToken = () => {
-  if (typeof window === "undefined") return "";
+// Also scans storage for JWT-like values (xxx.yyy.zzz) to avoid key mismatches.
+const looksLikeJwt = (v) => {
+  if (typeof v !== "string") return false;
+  const s = v.trim();
+  if (!s) return false;
+  const parts = s.split(".");
+  return parts.length === 3 && parts.every((p) => p.length >= 10);
+};
+
+const pickTokenFromStorage = (store) => {
+  if (!store) return "";
   const keysToTry = [
     "mb_auth_token_v1",
     "mb_auth_token",
+    "mb_token_v1",
     "mb_token",
     "auth_token",
     "token",
     "access_token",
     "jwt",
+    "jwt_token",
   ];
 
-  // direct string keys
+  // 1) Known keys first
   for (const k of keysToTry) {
     try {
-      const raw = localStorage.getItem(k);
+      const raw = store.getItem(k);
       if (!raw) continue;
+
       // could be JSON-stringified token or plain token
       let v = raw;
       try { v = JSON.parse(raw); } catch {}
@@ -82,16 +93,40 @@ const getAuthToken = () => {
     } catch {}
   }
 
-  // one more: sometimes token is stored with the user object
+  // 2) Fallback: scan all keys and pick the first JWT-like value
   try {
-    const u = JSON.parse(localStorage.getItem(LS_KEY_USERID) || '""');
-    // userId storage is separate; ignore
+    for (let i = 0; i < store.length; i++) {
+      const k = store.key(i);
+      if (!k) continue;
+      const raw = store.getItem(k);
+      if (!raw) continue;
+
+      // plain value
+      if (looksLikeJwt(raw)) return raw.trim();
+
+      // json value
+      try {
+        const v = JSON.parse(raw);
+        if (typeof v === "string" && looksLikeJwt(v)) return v.trim();
+        if (v && typeof v === "object") {
+          const cand = v.token || v.access_token || v.accessToken || v.jwt;
+          if (typeof cand === "string" && looksLikeJwt(cand)) return cand.trim();
+        }
+      } catch {}
+    }
   } catch {}
 
   return "";
 };
 
+const getAuthToken = () => {
+  if (typeof window === "undefined") return "";
+  // Try localStorage then sessionStorage
+  return pickTokenFromStorage(window.localStorage) || pickTokenFromStorage(window.sessionStorage) || "";
+};
+
 const buildAuthHeaders = (extra = {}) => {
+ = (extra = {}) => {
   const token = getAuthToken();
   const uid = (() => { try { const v = JSON.parse(localStorage.getItem(LS_KEY_USERID) || '""'); return (v || "").trim(); } catch { return ""; } })();
   return {
