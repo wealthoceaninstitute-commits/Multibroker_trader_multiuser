@@ -126,7 +126,6 @@ const getAuthToken = () => {
 };
 
 const buildAuthHeaders = (extra = {}) => {
- = (extra = {}) => {
   const token = getAuthToken();
   const uid = (() => { try { const v = JSON.parse(localStorage.getItem(LS_KEY_USERID) || '""'); return (v || "").trim(); } catch { return ""; } })();
   return {
