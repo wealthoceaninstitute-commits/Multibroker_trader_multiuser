@@ -221,6 +221,7 @@ export default function Clients() {
       `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`,
       `${API_BASE}/clients?ignored=${encodeURIComponent(uid)}`,
       `${API_BASE}/clients`,
+      `${API_BASE}/clients?userid=${encodeURIComponent(uid)}`,
     ];
 
     let lastArr = null;
