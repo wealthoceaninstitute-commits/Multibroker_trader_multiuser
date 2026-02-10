@@ -1,12 +1,42 @@
-// CopyTrading.jsx — Create + Edit + Delete + Enable/Disable
+// CopyTrading.jsx — Create + Edit + Delete + Enable/Disable (multi-user safe)
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Card, Button, Table, Modal, Form, Badge } from 'react-bootstrap';
 
-import { API_BASE } from "../src/lib/apiBase";
-import { authHeaders } from "../src/lib/auth";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:5001";
 
+// localStorage keys used across this project
+const LS_KEY_TOKEN = "mb_auth_token_v1";
+const LS_KEY_USERID = "mb_logged_in_userid_v1";
+
+function getUseridSafe() {
+  if (typeof window === "undefined") return "";
+  let uid = localStorage.getItem(LS_KEY_USERID) || localStorage.getItem("mb_user") || "";
+  uid = String(uid || "").trim();
+  // handle accidental quotes
+  if ((uid.startsWith('"') && uid.endsWith('"')) || (uid.startsWith("'") && uid.endsWith("'"))) {
+    uid = uid.slice(1, -1).trim();
+  }
+  return uid;
+}
+
+function authHeadersSafe() {
+  if (typeof window === "undefined") return {};
+  const token = localStorage.getItem(LS_KEY_TOKEN) || "";
+  const uid = getUseridSafe();
+  const h = {};
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  if (uid) h["x-user-id"] = uid;
+  return h;
+}
+
+async function fetchJson(url, options = {}) {
+  const r = await fetch(url, options);
+  let j = null;
+  try { j = await r.json(); } catch { j = null; }
+  return { ok: r.ok, status: r.status, json: j };
+}
 
 export default function CopyTrading() {
   const [clients, setClients] = useState([]);
@@ -16,66 +46,65 @@ export default function CopyTrading() {
   // modal state
   const [show, setShow] = useState(false);
   const [editingId, setEditingId] = useState(null); // null=create, string=edit
-  const [form, setForm] = useState({
-    name: '',
-    master: '',              // userid
-    rows: {},                // key -> { selected: bool, mult: '1' }
-  });
+  const [form, setForm] = useState({ name: '', master: '', rows: {} });
+
+  const uid = useMemo(() => getUseridSafe(), []);
 
   // ---- load data ----
   const loadClients = async () => {
-    const uid = getUserid();
-    const headers = authHeaders();
+    const headers = authHeadersSafe();
+    const enc = encodeURIComponent(uid || "");
+    // Try same family of endpoints as Clients tab (robust)
     const urls = [
       `${API_BASE}/get_clients`,
-      `${API_BASE}/get_clients?user_id=${encodeURIComponent(uid)}`,
-      `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`,
-      `${API_BASE}/clients?userid=${encodeURIComponent(uid)}`,
+      enc ? `${API_BASE}/get_clients?user_id=${enc}` : "",
+      enc ? `${API_BASE}/clients?user_id=${enc}` : "",
+      enc ? `${API_BASE}/clients?userid=${enc}` : "",
       `${API_BASE}/clients`,
-    ];
+    ].filter(Boolean);
 
-    for (const url of urls) {
+    for (const u of urls) {
       try {
-        const r = await fetch(url, { cache: "no-store", headers });
-        if (!r.ok) continue;
-        const j = await r.json();
-        const arr = Array.isArray(j) ? j : (j.clients || []);
+        const { ok, json } = await fetchJson(u, { headers, cache: 'no-store' });
+        if (!ok) continue;
+        const arr = Array.isArray(json) ? json : (json?.clients || []);
         if (Array.isArray(arr)) {
           setClients(arr);
           return;
         }
       } catch {}
     }
-
     setClients([]);
   };
+
   const loadSetups = async () => {
-    const uid = getUserid();
-    const headers = authHeaders();
+    const headers = authHeadersSafe();
+    const enc = encodeURIComponent(uid || "");
     const urls = [
       `${API_BASE}/list_copytrading_setups`,
-      `${API_BASE}/list_copytrading_setups?user_id=${encodeURIComponent(uid)}`,
-      `${API_BASE}/list_copytrading_setups?userid=${encodeURIComponent(uid)}`,
-    ];
+      enc ? `${API_BASE}/list_copytrading_setups?userid=${enc}` : "",
+      enc ? `${API_BASE}/list_copytrading_setups?user_id=${enc}` : "",
+    ].filter(Boolean);
 
-    for (const url of urls) {
+    for (const u of urls) {
       try {
-        const r = await fetch(url, { cache: "no-store", headers });
-        if (!r.ok) continue;
-        const j = await r.json();
-        const arr = j.setups || [];
-        if (Array.isArray(arr)) {
-          setSetups(arr);
-          return;
-        }
+        const { ok, json } = await fetchJson(u, { headers, cache: 'no-store' });
+        if (!ok) continue;
+        setSetups(json?.setups || []);
+        return;
       } catch {}
     }
-
     setSetups([]);
   };
+
   useEffect(() => { loadClients(); loadSetups(); }, []);
 
-  const keyOf = (c) => `${(c.broker || '').toLowerCase()}::${c.userid || c.client_id || ''}`;
+  // Also refresh clients when opening modal (so it's always in sync with Clients tab)
+  useEffect(() => {
+    if (show) loadClients();
+  }, [show]);
+
+  const keyOf = (c) => `${(c.broker || 'motilal').toLowerCase()}::${c.userid || c.client_id || c.clientId || ''}`;
 
   // ---- toolbar actions ----
   const openCreate = () => {
@@ -99,260 +128,211 @@ export default function CopyTrading() {
     const children = s.children || [];
     const mm = s.multipliers || {};
     clients.forEach(c => {
-      const uid = c.userid || c.client_id || '';
-      if (children.includes(uid)) {
-        const k = keyOf(c);
-        rows[k] = { selected: true, mult: String(mm[uid] ?? 1) };
-      }
+      const k = keyOf(c);
+      const cid = (c.userid || c.client_id || "");
+      const selected = children.includes(cid) || children.includes(k) || children.includes(c.client_id);
+      const mult = String(mm[cid] ?? mm[k] ?? '1');
+      rows[k] = { selected, mult };
     });
 
     setForm({
       name: s.name || s.id || '',
       master: s.master || '',
-      rows
+      rows,
     });
-    setEditingId(s.id || s.name);
+    setEditingId(selectedId);
     setShow(true);
   };
 
-  const onDelete = async () => {
-    if (!selectedId) return;
-    if (!confirm('Delete this setup?')) return;
-    try {
-      let r = await fetch(`${API_BASE}/delete_copy_setup`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify({ ids: [selectedId] })
-      });
-      if (r.status === 404) {
-        // compatibility fallback
-        r = await fetch(`${API_BASE}/delete_copytrading_setup`, {
-          method: 'POST',
-          headers: authHeaders(),
-          body: JSON.stringify({ ids: [selectedId] })
-        });
-      }
-    } catch {}
-    await loadSetups();
-    setSelectedId('');
-  };
-
-  const enableCopy = async (value) => {
-    if (!selectedId) return;
-    try {
-      const ep = value ? 'enable_copy' : 'disable_copy';
-      await fetch(`${API_BASE}/${ep}`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify({ ids: [selectedId] })
-      });
-    } catch {}
-    await loadSetups();
-  };
-
-  // ---- submit create/edit ----
-  const onSubmitSetup = async (e) => {
-    e.preventDefault();
-    const name = (form.name || '').trim();
-    const master = (form.master || '').trim();
-    if (!name || !master) { alert('Enter Setup Name and select a Master.'); return; }
+  const saveSetup = async () => {
+    const headers = { ...authHeadersSafe(), "Content-Type": "application/json" };
 
     const children = [];
     const multipliers = {};
     Object.entries(form.rows || {}).forEach(([k, v]) => {
       if (!v?.selected) return;
-      const id = k.split('::')[1];
-      if (!id || id === master) return;
-      children.push(id);
-      const m = parseFloat(v.mult);
-      multipliers[id] = !isFinite(m) || m <= 0 ? 1 : m;
+      const cid = k.split("::")[1] || "";
+      if (!cid) return;
+      if (cid === form.master) return; // master cannot be child
+      children.push(cid);
+      multipliers[cid] = Number(v.mult || 1);
     });
-    if (!children.length) { alert('Pick at least one child account.'); return; }
 
-    const body = {
-      // dual keys for backend compatibility
-      id: editingId || undefined,
-      name, setup_name: name,
-      master, master_account: master,
-      children, child_accounts: children,
+    const payload = {
+      id: editingId || form.name,
+      name: form.name,
+      master: form.master,
+      children,
       multipliers,
-      enabled: editingId ? undefined : false
+      enabled: true,
     };
 
-    try {
-      const r = await fetch(`${API_BASE}/save_copytrading_setup`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify(body)
-      });
-      if (!r.ok) {
-        const t = await r.text().catch(()=>'');
-        alert(`Error saving setup: ${r.status} ${t}`);
-        return;
-      }
+    const { ok } = await fetchJson(`${API_BASE}/save_copytrading_setup`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (ok) {
       setShow(false);
-      setEditingId(null);
-      await loadSetups();
-    } catch {
-      alert('Network error while saving setup.');
+      setSelectedId(payload.id || payload.name);
+      loadSetups();
     }
   };
 
-  const statusBadge = (s) => (
-    <Badge bg={s ? 'success' : 'secondary'}>{s ? 'Enabled' : 'Disabled'}</Badge>
-  );
+  const enableDisable = async (enable) => {
+    if (!selectedId) return;
+    const headers = { ...authHeadersSafe(), "Content-Type": "application/json" };
+    const url = enable ? `${API_BASE}/enable_copy` : `${API_BASE}/disable_copy`;
+    const { ok } = await fetchJson(url, { method: "POST", headers, body: JSON.stringify({ id: selectedId }) });
+    if (ok) loadSetups();
+  };
 
-  // ---- render ----
+  const deleteSetup = async () => {
+    if (!selectedId) return;
+    const headers = { ...authHeadersSafe(), "Content-Type": "application/json" };
+    const { ok } = await fetchJson(`${API_BASE}/delete_copy_setup`, { method: "POST", headers, body: JSON.stringify({ id: selectedId }) });
+    if (ok) {
+      setSelectedId("");
+      loadSetups();
+    }
+  };
+
+  const masterOptions = clients.map(c => ({
+    key: keyOf(c),
+    id: c.userid || c.client_id || "",
+    label: `${c.name || c.userid || c.client_id || ""}`,
+    broker: c.broker || "motilal",
+  }));
+
+  const badgeVariant = (s) => (s?.enabled ? "success" : "secondary");
+
   return (
     <Card className="p-3">
       <h5 className="mb-3">Copy Trading Management</h5>
 
-      <div className="d-flex align-items-center mb-3" style={{ gap: 10 }}>
+      <div className="d-flex gap-2 mb-2">
         <Button variant="success" onClick={openCreate}>Create Setup</Button>
         <Button variant="secondary" disabled={!selectedId} onClick={openEdit}>Edit Setup</Button>
-        <Button variant="danger" disabled={!selectedId} onClick={onDelete}>Delete Setup</Button>
-        <Button variant="primary"  disabled={!selectedId} onClick={() => enableCopy(true)}>Enable Copy</Button>
-        <Button variant="warning"  disabled={!selectedId} onClick={() => enableCopy(false)}>Disable Copy</Button>
+        <Button variant="outline-success" disabled={!selectedId} onClick={() => enableDisable(true)}>Enable</Button>
+        <Button variant="outline-secondary" disabled={!selectedId} onClick={() => enableDisable(false)}>Disable</Button>
+        <Button variant="danger" disabled={!selectedId} onClick={deleteSetup}>Delete</Button>
       </div>
 
-      <Table bordered hover responsive size="sm">
+      <Table bordered size="sm" className="mt-2">
         <thead>
           <tr>
-            <th style={{ width: 70 }}>Select</th>
+            <th>Select</th>
             <th>Setup Name</th>
             <th>Status</th>
           </tr>
         </thead>
         <tbody>
           {setups.length === 0 ? (
-            <tr><td colSpan={3} className="text-muted">No setups yet.</td></tr>
-          ) : setups.map(s => (
-            <tr key={s.id || s.name}>
-              <td>
-                <Form.Check
-                  type="radio"
-                  name="setupPick"
-                  checked={selectedId === (s.id || s.name)}
-                  onChange={() => setSelectedId(s.id || s.name)}
-                />
-              </td>
-              <td>{s.name || s.id}</td>
-              <td>{statusBadge(!!s.enabled)}</td>
-            </tr>
-          ))}
+            <tr><td colSpan={3}>No setups yet.</td></tr>
+          ) : setups.map(s => {
+            const id = (s.id || s.name);
+            return (
+              <tr key={id}>
+                <td>
+                  <Form.Check
+                    type="radio"
+                    name="setup"
+                    checked={selectedId === id}
+                    onChange={() => setSelectedId(id)}
+                  />
+                </td>
+                <td>{s.name || id}</td>
+                <td><Badge bg={badgeVariant(s)}>{s.enabled ? "enabled" : "disabled"}</Badge></td>
+              </tr>
+            );
+          })}
         </tbody>
       </Table>
 
-      {/* CREATE / EDIT modal (table like Group: Add | Client | Broker | Multiplier) */}
-      <Modal show={show} onHide={() => { setShow(false); setEditingId(null); }} size="lg">
-        <Form onSubmit={onSubmitSetup}>
-          <Modal.Header closeButton>
-            <Modal.Title>{editingId ? 'Edit Copy Trading Setup' : 'Create Copy Trading Setup'}</Modal.Title>
-          </Modal.Header>
-          <Modal.Body>
-            <Form.Group className="mb-3" style={{ maxWidth: 420 }}>
-              <Form.Label>Setup Name *</Form.Label>
-              <Form.Control
-                value={form.name}
-                required
-                onChange={(e)=>setForm(p=>({...p, name: e.target.value}))}
-              />
-            </Form.Group>
+      <Modal show={show} onHide={() => setShow(false)} size="lg" centered>
+        <Modal.Header closeButton>
+          <Modal.Title>{editingId ? "Edit Copy Trading Setup" : "Create Copy Trading Setup"}</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <Form.Group className="mb-3">
+            <Form.Label>Setup Name *</Form.Label>
+            <Form.Control
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="e.g., morning-copy"
+            />
+          </Form.Group>
 
-            <Form.Group className="mb-3" style={{ maxWidth: 420 }}>
-              <Form.Label>Select Master Account *</Form.Label>
-              <Form.Select
-                value={form.master}
-                required
-                onChange={(e)=>{
-                  const master = e.target.value;
-                  setForm(p=>{
-                    const rows = { ...(p.rows || {}) };
-                    Object.keys(rows).forEach(k=>{
-                      const id = k.split('::')[1];
-                      if (id === master) rows[k].selected = false;
-                    });
-                    return { ...p, master, rows };
-                  });
-                }}
-              >
-                <option value="">-- Select Master --</option>
-                {clients.map(c=>{
-                  const id = c.userid || c.client_id || '';
-                  const label = `${c.name || c.display_name || id} : ${id}`;
-                  return <option key={`m-${id}`} value={id}>{label}</option>;
-                })}
-              </Form.Select>
-            </Form.Group>
+          <Form.Group className="mb-3">
+            <Form.Label>Select Master Account *</Form.Label>
+            <Form.Select
+              value={form.master}
+              onChange={(e) => setForm({ ...form, master: e.target.value })}
+            >
+              <option value="">-- Select Master --</option>
+              {masterOptions.map(o => (
+                <option key={o.key} value={o.id}>{o.label}</option>
+              ))}
+            </Form.Select>
+          </Form.Group>
 
-            <div className="mb-2 fw-semibold">Select Child Accounts & Multipliers</div>
-            <Table bordered hover responsive size="sm">
-              <thead>
-                <tr>
-                  <th style={{ width: 70 }}>Add</th>
-                  <th>Client</th>
-                  <th>Broker</th>
-                  <th style={{ width: 180 }}>Multiplier</th>
-                </tr>
-              </thead>
-              <tbody>
-                {clients.length === 0 ? (
-                  <tr><td colSpan={4} className="text-muted">No clients.</td></tr>
-                ) : clients.map(c=>{
-                  const k = keyOf(c);
-                  const id = c.userid || c.client_id || '';
-                  const isMaster = form.master && id === form.master;
-                  const row = form.rows[k] || { selected:false, mult:'1' };
-                  const label = `${c.name || c.display_name || id} : ${id}`;
-                  return (
-                    <tr key={`row-${k}`}>
-                      <td>
-                        <Form.Check
-                          type="checkbox"
-                          disabled={isMaster}
-                          checked={!isMaster && !!row.selected}
-                          onChange={(e)=>{
-                            const v = e.target.checked;
-                            setForm(p=>{
-                              const rows = { ...(p.rows || {}) };
-                              rows[k] = { ...(rows[k] || { mult:'1' }), selected: v };
-                              return { ...p, rows };
-                            });
-                          }}
-                        />
-                      </td>
-                      <td>{label}</td>
-                      <td className="text-capitalize">{(c.broker||'').toLowerCase()}</td>
-                      <td>
-                        <Form.Control
-                          type="number"
-                          min="0.01" step="0.01"
-                          disabled={isMaster || !row.selected}
-                          value={row.mult ?? '1'}
-                          onChange={(e)=>{
-                            const val = e.target.value;
-                            setForm(p=>{
-                              const rows = { ...(p.rows || {}) };
-                              rows[k] = { ...(rows[k] || { selected:false }), mult: val };
-                              return { ...p, rows };
-                            });
-                          }}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </Table>
-            <div className="text-muted" style={{ fontSize: 12 }}>
-              Master cannot be a child. Each child has its own multiplier.
-            </div>
-          </Modal.Body>
-          <Modal.Footer>
-            <Button variant="secondary" onClick={()=>{ setShow(false); setEditingId(null); }}>Cancel</Button>
-            <Button type="submit" variant="success">{editingId ? 'Save Changes' : 'Save Setup'}</Button>
-          </Modal.Footer>
-        </Form>
+          <Table bordered size="sm">
+            <thead>
+              <tr>
+                <th>Add</th>
+                <th>Client</th>
+                <th>Broker</th>
+                <th>Multiplier</th>
+              </tr>
+            </thead>
+            <tbody>
+              {clients.length === 0 ? (
+                <tr><td colSpan={4}>No clients.</td></tr>
+              ) : clients.map(c => {
+                const k = keyOf(c);
+                const row = form.rows?.[k] || { selected: false, mult: '1' };
+                const cid = c.userid || c.client_id || "";
+                const disabled = cid === form.master;
+                return (
+                  <tr key={k}>
+                    <td>
+                      <Form.Check
+                        type="checkbox"
+                        checked={!!row.selected}
+                        disabled={disabled}
+                        onChange={(e) => setForm({
+                          ...form,
+                          rows: { ...form.rows, [k]: { ...row, selected: e.target.checked } }
+                        })}
+                      />
+                    </td>
+                    <td>{c.name || cid}</td>
+                    <td>{(c.broker || "motilal").toUpperCase()}</td>
+                    <td style={{ width: 140 }}>
+                      <Form.Control
+                        value={row.mult}
+                        disabled={disabled || !row.selected}
+                        onChange={(e) => setForm({
+                          ...form,
+                          rows: { ...form.rows, [k]: { ...row, mult: e.target.value } }
+                        })}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </Table>
+
+          <div className="text-muted" style={{ fontSize: 12 }}>
+            Master cannot be a child. Each child has its own multiplier.
+          </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShow(false)}>Cancel</Button>
+          <Button variant="success" onClick={saveSetup} disabled={!form.name || !form.master}>Save Setup</Button>
+        </Modal.Footer>
       </Modal>
     </Card>
   );
