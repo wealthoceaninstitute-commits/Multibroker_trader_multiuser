@@ -24,18 +24,54 @@ export default function CopyTrading() {
 
   // ---- load data ----
   const loadClients = async () => {
-    try {
-      const r = await fetch(`${API_BASE}/clients`, { cache: 'no-store', headers: authHeaders() });
-      const j = await r.json();
-      setClients(Array.isArray(j) ? j : (j.clients || []));
-    } catch {}
+    const uid = getUserid();
+    const headers = authHeaders();
+    const urls = [
+      `${API_BASE}/get_clients`,
+      `${API_BASE}/get_clients?user_id=${encodeURIComponent(uid)}`,
+      `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`,
+      `${API_BASE}/clients?userid=${encodeURIComponent(uid)}`,
+      `${API_BASE}/clients`,
+    ];
+
+    for (const url of urls) {
+      try {
+        const r = await fetch(url, { cache: "no-store", headers });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const arr = Array.isArray(j) ? j : (j.clients || []);
+        if (Array.isArray(arr)) {
+          setClients(arr);
+          return;
+        }
+      } catch {}
+    }
+
+    setClients([]);
   };
   const loadSetups = async () => {
-    try {
-      const r = await fetch(`${API_BASE}/list_copytrading_setups`, { cache: 'no-store', headers: authHeaders() });
-      const j = await r.json();
-      setSetups(j.setups || []);
-    } catch {}
+    const uid = getUserid();
+    const headers = authHeaders();
+    const urls = [
+      `${API_BASE}/list_copytrading_setups`,
+      `${API_BASE}/list_copytrading_setups?user_id=${encodeURIComponent(uid)}`,
+      `${API_BASE}/list_copytrading_setups?userid=${encodeURIComponent(uid)}`,
+    ];
+
+    for (const url of urls) {
+      try {
+        const r = await fetch(url, { cache: "no-store", headers });
+        if (!r.ok) continue;
+        const j = await r.json();
+        const arr = j.setups || [];
+        if (Array.isArray(arr)) {
+          setSetups(arr);
+          return;
+        }
+      } catch {}
+    }
+
+    setSetups([]);
   };
   useEffect(() => { loadClients(); loadSetups(); }, []);
 
