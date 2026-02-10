@@ -215,12 +215,6 @@ export default function Clients() {
     const headers = buildAuthHeaders();
 
     const urls = [
-      `${API_BASE}/get_clients`,
-      `${API_BASE}/get_clients?user_id=${encodeURIComponent(uid)}`,
-      `${API_BASE}/get_clients?ignored=${encodeURIComponent(uid)}`,
-      `${API_BASE}/clients?user_id=${encodeURIComponent(uid)}`,
-      `${API_BASE}/clients?ignored=${encodeURIComponent(uid)}`,
-      `${API_BASE}/clients`,
       `${API_BASE}/clients?userid=${encodeURIComponent(uid)}`,
     ];
 
