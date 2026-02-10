@@ -13,6 +13,66 @@ const FORM_STORAGE_KEY = 'woi-trade-form-v1';
 
 const LS_KEY_USERID = 'mb_logged_in_userid_v1';
 
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://127.0.0.1:5001';
+
+// ===== Auth header helper (same spirit as Clients tab) =====
+const looksLikeJwt = (v) => {
+  if (typeof v !== 'string') return false;
+  const parts = v.trim().split('.');
+  return parts.length === 3 && parts.every((p) => p.length >= 10);
+};
+
+const pickTokenFromStorage = (store) => {
+  if (!store) return '';
+  const keysToTry = ['mb_auth_token_v1', 'mb_auth_token', 'mb_token_v1', 'mb_token', 'auth_token', 'token', 'access_token', 'jwt', 'jwt_token'];
+  for (const k of keysToTry) {
+    try {
+      const raw = store.getItem(k);
+      if (!raw) continue;
+      let v = raw;
+      try { v = JSON.parse(raw); } catch {}
+      if (typeof v === 'string' && v.trim()) return v.trim();
+      if (v && typeof v === 'object') {
+        const cand = v.token || v.access_token || v.accessToken || v.jwt;
+        if (typeof cand === 'string' && cand.trim()) return cand.trim();
+      }
+    } catch {}
+  }
+  try {
+    for (let i = 0; i < store.length; i++) {
+      const k = store.key(i);
+      if (!k) continue;
+      const raw = store.getItem(k);
+      if (!raw) continue;
+      if (looksLikeJwt(raw)) return raw.trim();
+      try {
+        const v = JSON.parse(raw);
+        if (typeof v === 'string' && looksLikeJwt(v)) return v.trim();
+        if (v && typeof v === 'object') {
+          const cand = v.token || v.access_token || v.accessToken || v.jwt;
+          if (typeof cand === 'string' && looksLikeJwt(cand)) return cand.trim();
+        }
+      } catch {}
+    }
+  } catch {}
+  return '';
+};
+
+const getAuthToken = () => {
+  if (typeof window === 'undefined') return '';
+  return pickTokenFromStorage(window.localStorage) || pickTokenFromStorage(window.sessionStorage) || '';
+};
+
+const buildAuthHeaders = (userid, extra = {}) => {
+  const token = getAuthToken();
+  return {
+    ...extra,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(userid ? { 'x-user-id': userid } : {}),
+  };
+};
+
 // --------- robust user detection ---------
 // Prefer the visible navbar text: "Welcome, <user>"
 const detectUserFromWelcomeText = () => {
@@ -167,31 +227,71 @@ export default function TradeForm() {
 
   // ---------- initial data ----------
   useEffect(() => {
-    const userid = getLoggedInUserId();
+    // ---- clients (same as Clients tab) ----
+    const normalizeUid = (v) => {
+      if (!v) return '';
+      let t = String(v).trim();
+      // handles "pra" or %22pra%22 that might end up as quoted string
+      if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) t = t.slice(1, -1);
+      return t.trim();
+    };
 
-    // ---- clients (per logged-in user) ----
-    const headers = userid ? { 'x-user-id': userid } : undefined;
-    const params = userid ? { userid } : undefined;
+    const useridRaw = getLoggedInUserId();
+    const userid = normalizeUid(useridRaw);
 
-    // Prefer /clients (new) then fallback to /get_clients (older)
-    api.get('/clients', { headers, params })
-      .then(res => {
-        const list = normalizeClientsPayload(res.data);
-        if (list.length) setClients(list);
-        else {
-          // fallback
-          return api.get('/get_clients', { headers, params })
-            .then(r2 => setClients(normalizeClientsPayload(r2.data)))
-            .catch(() => setClients([]));
-        }
-      })
-      .catch(() => {
-        api.get('/get_clients', { headers, params })
-          .then(r2 => setClients(normalizeClientsPayload(r2.data)))
-          .catch(() => setClients([]));
-      });
+    const buildHeaders = () => {
+      let token = '';
+      try {
+        token = pickTokenFromStorage(window?.localStorage) || pickTokenFromStorage(window?.sessionStorage) || '';
+      } catch {}
+      return {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(userid ? { 'x-user-id': userid } : {}),
+      };
+    };
+
+    const loadClients = async () => {
+      if (!userid) { setClients([]); return; }
+      const headers = buildHeaders();
+
+      const urls = [
+        `${API_BASE}/get_clients`,
+        `${API_BASE}/get_clients?user_id=${encodeURIComponent(userid)}`,
+        `${API_BASE}/get_clients?ignored=${encodeURIComponent(userid)}`,
+        `${API_BASE}/clients?user_id=${encodeURIComponent(userid)}`,
+        `${API_BASE}/clients?ignored=${encodeURIComponent(userid)}`,
+        `${API_BASE}/clients`,
+        `${API_BASE}/clients?userid=${encodeURIComponent(userid)}`,
+      ];
+
+      let lastArr = [];
+      for (const url of urls) {
+        try {
+          const r = await fetch(url, { cache: 'no-store', headers });
+          if (!r.ok) continue;
+          const j = await r.json();
+          const arr = Array.isArray(j) ? j : (j.clients || j.data || []);
+          const norm = Array.isArray(arr) ? arr : [];
+          // Normalize broker casing + keep ids consistent
+          const cleaned = norm.map((c) => ({
+            ...c,
+            broker: (c?.broker || 'motilal').toLowerCase(),
+            client_id: c?.client_id || c?.userid || c?.client_code || '',
+            userid: c?.userid || c?.client_id || c?.client_code || '',
+          }));
+          if (cleaned.length > 0) { setClients(cleaned); return; }
+          lastArr = cleaned;
+        } catch {}
+      }
+      setClients(lastArr);
+    };
+
+    loadClients();
 
     // ---- groups (if backend supports per-user groups) ----
+    const headers = buildHeaders();
+    const params = userid ? { userid } : undefined;
+
     api.get('/groups', { headers, params }).then(res => {
       const normalized = (res.data?.groups || []).map(g => ({
         group_name: g.name || g.group_name || g.id,
@@ -405,7 +505,7 @@ export default function TradeForm() {
                     onChange={e=>setSelectedClients(Array.from(e.target.selectedOptions).map(o=>o.value))}
                   >
                     {(clients || []).map(c => (
-                      <option key={c.client_id} value={c.client_id}>
+                      <option key={(c.client_id || c.userid)} value={(c.client_id || c.userid)}>
                         {c.name} : {c.client_id}
                       </option>
                     ))}
