@@ -25,14 +25,14 @@ export default function CopyTrading() {
   // ---- load data ----
   const loadClients = async () => {
     try {
-      const r = await fetch(`${API_BASE}/clients`, { cache: 'no-store' });
+      const r = await fetch(`${API_BASE}/clients`, { cache: 'no-store', headers: authHeaders() });
       const j = await r.json();
       setClients(Array.isArray(j) ? j : (j.clients || []));
     } catch {}
   };
   const loadSetups = async () => {
     try {
-      const r = await fetch(`${API_BASE}/list_copytrading_setups`, { cache: 'no-store' });
+      const r = await fetch(`${API_BASE}/list_copytrading_setups`, { cache: 'no-store', headers: authHeaders() });
       const j = await r.json();
       setSetups(j.setups || []);
     } catch {}
