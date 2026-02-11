@@ -514,7 +514,7 @@ const [groups, setGroups] = useState([]);
     Object.keys(copy).forEach(id => { if (!next.includes(id)) delete copy[id]; });
     return copy;
   });
-}
+                    }}
                   >
                     {(clients || []).map(c => (
                       <option key={(c.client_id || c.userid)} value={(c.client_id || c.userid)}>
