@@ -163,7 +163,10 @@ export default function TradeForm() {
 
   const [clients, setClients] = useState([]);
   const [selectedClients, setSelectedClients] = useState([]);
-  const [groups, setGroups] = useState([]);
+  
+  const [diffQty, setDiffQty] = useState(false);
+  const [perClientQty, setPerClientQty] = useState({});
+const [groups, setGroups] = useState([]);
   const [selectedGroups, setSelectedGroups] = useState([]);
 
   const [perClientQty, setPerClientQty] = useState({});
@@ -502,7 +505,16 @@ export default function TradeForm() {
                     multiple
                     size={8}
                     value={selectedClients}
-                    onChange={e=>setSelectedClients(Array.from(e.target.selectedOptions).map(o=>o.value))}
+                    onChange={e => {
+  const next = Array.from(e.target.selectedOptions).map(o => o.value);
+  setSelectedClients(next);
+  setPerClientQty(prev => {
+    const copy = { ...prev };
+    next.forEach(id => { if (copy[id] === undefined) copy[id] = 1; });
+    Object.keys(copy).forEach(id => { if (!next.includes(id)) delete copy[id]; });
+    return copy;
+  });
+}
                   >
                     {(clients || []).map(c => (
                       <option key={(c.client_id || c.userid)} value={(c.client_id || c.userid)}>
@@ -574,7 +586,7 @@ export default function TradeForm() {
                   type="checkbox"
                   id="entity_diffQty"
                   name="entity_diffQty"
-                  label="Diff. Qty."
+                  label=\"Diff. Qty.\" checked={diffQty} onChange={(e)=>setDiffQty(e.target.checked)}
                   checked={diffQty}
                   onChange={e=>setDiffQty(e.target.checked)}
                 />
