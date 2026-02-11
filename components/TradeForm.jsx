@@ -529,7 +529,6 @@ export default function TradeForm() {
         <div style={{minWidth:220}}>{getClientName(cid)} <small className="text-muted">({getClientCode(cid)})</small></div>
         <Form.Control
           type="number"
-                disabled={qtySelection==='auto' || diffQty}
           min={1}
           value={perClientQty[cid] ?? qty}
           onChange={e=>{
@@ -584,7 +583,6 @@ export default function TradeForm() {
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                disabled={qtySelection==='auto' || diffQty}
                 value={qty}
                 onChange={e=>setQty(onlyDigits(e.target.value))}
                 onBlur={()=>setQty(String(Math.max(1, parseInt(qty || '1', 10) || 1)))}
