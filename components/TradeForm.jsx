@@ -586,7 +586,7 @@ const [groups, setGroups] = useState([]);
                   type="checkbox"
                   id="entity_diffQty"
                   name="entity_diffQty"
-                  label=\"Diff. Qty.\" checked={diffQty} onChange={(e)=>setDiffQty(e.target.checked)}
+                  label="Diff. Qty."
                   checked={diffQty}
                   onChange={e=>setDiffQty(e.target.checked)}
                 />
