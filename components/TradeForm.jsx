@@ -148,7 +148,6 @@ export default function TradeForm() {
   const [qtySelection, setQtySelection] = useState('manual');  // manual | auto
 
   const [groupAcc, setGroupAcc] = useState(false);
-  const [diffQty, setDiffQty] = useState(false);
   const [multiplier, setMultiplier] = useState(false);
 
   const [qty, setQty] = useState('1');
@@ -163,13 +162,8 @@ export default function TradeForm() {
 
   const [clients, setClients] = useState([]);
   const [selectedClients, setSelectedClients] = useState([]);
-  
-  const [diffQty, setDiffQty] = useState(false);
-  const [perClientQty, setPerClientQty] = useState({});
-const [groups, setGroups] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [selectedGroups, setSelectedGroups] = useState([]);
-
-  const [perClientQty, setPerClientQty] = useState({});
   const [perGroupQty, setPerGroupQty] = useState({});
 
   const [busy, setBusy] = useState(false);
@@ -506,15 +500,15 @@ const [groups, setGroups] = useState([]);
                     size={8}
                     value={selectedClients}
                     onChange={e => {
-  const next = Array.from(e.target.selectedOptions).map(o => o.value);
+  const next = Array.from(e.target.selectedOptions).map(o=>o.value);
   setSelectedClients(next);
   setPerClientQty(prev => {
-    const copy = { ...prev };
-    next.forEach(id => { if (copy[id] === undefined) copy[id] = 1; });
-    Object.keys(copy).forEach(id => { if (!next.includes(id)) delete copy[id]; });
+    const copy = {...prev};
+    next.forEach(id => { if(copy[id]===undefined) copy[id]=qty; });
+    Object.keys(copy).forEach(id => { if(!next.includes(id)) delete copy[id]; });
     return copy;
   });
-                    }}
+}
                   >
                     {(clients || []).map(c => (
                       <option key={(c.client_id || c.userid)} value={(c.client_id || c.userid)}>
@@ -522,6 +516,27 @@ const [groups, setGroups] = useState([]);
                       </option>
                     ))}
                   </Form.Select>
+
+{diffQty && selectedClients.length>0 && (
+  <div className="border rounded p-2 mt-2" style={{maxHeight:260,overflowY:'auto'}}>
+    <div className="fw-bold mb-1">Client-wise Quantity</div>
+    {selectedClients.map(cid=>(
+      <div key={cid} className="d-flex align-items-center gap-2 mb-1">
+        <div style={{minWidth:220}}>{cid}</div>
+        <Form.Control
+          type="number"
+          value={perClientQty[cid]||qty}
+          onChange={e=>{
+            const v=e.target.value;
+            setPerClientQty(prev=>({...prev,[cid]:v}));
+          }}
+          style={{width:120}}
+        />
+      </div>
+    ))}
+  </div>
+)}
+
                 </>
               ) : (
                 <>
