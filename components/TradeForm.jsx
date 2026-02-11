@@ -162,6 +162,16 @@ export default function TradeForm() {
   const [amo, setAmo] = useState(false);
 
   const [clients, setClients] = useState([]);
+
+  const getClientName = (cid) => {
+    const c = (clients || []).find(x => (x.client_id || x.userid) === cid);
+    return (c && (c.name || c.display_name || c.userid || c.client_id)) ? (c.name || c.display_name || c.userid || c.client_id) : cid;
+  };
+  const getClientCode = (cid) => {
+    const c = (clients || []).find(x => (x.client_id || x.userid) === cid);
+    return c ? (c.client_id || c.userid || cid) : cid;
+  };
+
   const [selectedClients, setSelectedClients] = useState([]);
   const [groups, setGroups] = useState([]);
   const [selectedGroups, setSelectedGroups] = useState([]);
@@ -506,7 +516,7 @@ export default function TradeForm() {
                   >
                     {(clients || []).map(c => (
                       <option key={(c.client_id || c.userid)} value={(c.client_id || c.userid)}>
-                        {c.name} : {c.client_id}
+                        {(c.name || c.display_name || c.client_id || c.userid)} : {(c.client_id || c.userid)}
                       </option>
                     ))}
                   </Form.Select>
@@ -516,7 +526,7 @@ export default function TradeForm() {
     <div className="fw-bold mb-1">Client-wise Quantity</div>
     {selectedClients.map(cid=>(
       <div key={cid} className="d-flex align-items-center gap-2 mb-1">
-        <div style={{minWidth:220}}>{cid}</div>
+        <div style={{minWidth:220}}>{getClientName(cid)} <small className="text-muted">({getClientCode(cid)})</small></div>
         <Form.Control
           type="number"
           min={1}
