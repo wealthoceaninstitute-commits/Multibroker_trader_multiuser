@@ -529,6 +529,7 @@ export default function TradeForm() {
         <div style={{minWidth:220}}>{getClientName(cid)} <small className="text-muted">({getClientCode(cid)})</small></div>
         <Form.Control
           type="number"
+                disabled={diffQty || qtySelection==='auto'}
           min={1}
           value={perClientQty[cid] ?? qty}
           onChange={e=>{
