@@ -4,6 +4,17 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Card, Table, Tabs, Tab, Badge, Modal, Form, Spinner, InputGroup } from 'react-bootstrap';
 import api from './api';
 
+// --- per-user helper (no UI change) ---
+const LS_KEY_USERID = "mb_logged_in_userid_v1";
+const LS_KEY_USERID_OLD = "mb_user";
+const getOwnerUserId = () => {
+  if (typeof window === "undefined") return "";
+  const u = (localStorage.getItem(LS_KEY_USERID) || localStorage.getItem(LS_KEY_USERID_OLD) || "").trim();
+  // handle '"pra"' etc
+  return (u.startsWith('"') && u.endsWith('"')) ? u.slice(1, -1).trim() : u;
+};
+
+
 /* == tiny inline icons (no extra deps) == */
 const SearchIcon = (props) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -124,7 +135,7 @@ export default function Orders() {
     abortRef.current = controller;
 
     try {
-      const res = await api.get('/get_orders', { signal: controller.signal });
+      const res = await api.get('/get_orders', { signal: controller.signal, params: { userid: getOwnerUserId() } });
       const next = {
         pending: res.data?.pending || [],
         traded: res.data?.traded || [],
@@ -195,7 +206,7 @@ export default function Orders() {
 
     try {
       busyRef.current = true;
-      const res = await api.post('/cancel_order', { orders: selectedOrders });
+      const res = await api.post('/cancel_order', { userid: getOwnerUserId(), orders: selectedOrders });
       alert(Array.isArray(res.data?.message) ? res.data.message.join('\n') : 'Cancel request sent');
       setSelectedIds({});
       await fetchAll();
@@ -214,7 +225,7 @@ export default function Orders() {
 
   const tryFetchLTP = async (symbol) => {
     try {
-      const r = await api.get('/ltp', { params: { symbol } });
+      const r = await api.get('/ltp', { params: { symbol, userid: getOwnerUserId() } });
       const v = Number(r?.data?.ltp);
       if (!Number.isNaN(v)) setModLTP(v.toFixed(2));
     } catch { /* ignore 404 etc. */ }
@@ -287,7 +298,7 @@ export default function Orders() {
         if (modPrice !== '') payload.price = priceNum;
         if (modTrig !== '') payload.triggerprice = trigNum;
 
-        return api.post('/modify_order', { order: payload });
+        return api.post('/modify_order', { userid: getOwnerUserId(), order: payload });
       });
 
       const results = await Promise.allSettled(requests);
