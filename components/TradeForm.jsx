@@ -48,16 +48,77 @@ export default function TradeForm() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
 
-  useEffect(() => {
-    api.get('/get_clients')
-      .then(res => setClients(res.data?.clients || []))
-      .catch(() => {});
+  // ---- load user-scoped Clients & Groups (backend compatibility) ----
+useEffect(() => {
+  const detectUserId = () => {
+    if (typeof window === 'undefined') return '';
+    // preferred keys used across the app
+    const a = window.localStorage.getItem('mb_logged_in_userid_v1') || '';
+    const b = window.localStorage.getItem('mb_user') || '';
+    const c = window.localStorage.getItem('mb_logged_in_userid') || '';
+    return (a || b || c || '').replace(/(^"|"$)/g, '');
+  };
 
-    // NOTE: backend route is /get_groups
-    api.get('/get_groups')
-      .then(res => setGroups(res.data?.groups || []))
-      .catch(() => {});
-  }, []);
+  const userid = detectUserId();
+
+  const tryGet = async (path, params = {}) => {
+    // attach x-user-id header since some backend builds depend on it
+    const headers = userid ? { 'x-user-id': userid } : {};
+    return api.get(path, { params, headers });
+  };
+
+  const loadClients = async () => {
+    const attempts = [
+      () => tryGet('/clients', userid ? { userid } : {}),
+      () => tryGet('/clients', userid ? { user_id: userid } : {}),
+      () => tryGet('/clients', {}), // token-based (backend may infer user)
+      () => tryGet('/get_clients', userid ? { userid } : {}), // legacy
+      () => tryGet('/get_clients', userid ? { user_id: userid } : {}), // legacy
+      () => tryGet('/get_clients', {}), // legacy
+    ];
+
+    for (const fn of attempts) {
+      try {
+        const res = await fn();
+        const data = res?.data;
+        const list = Array.isArray(data?.clients) ? data.clients : (Array.isArray(data) ? data : []);
+        setClients(list);
+        return;
+      } catch (e) {
+        // keep trying
+      }
+    }
+    setClients([]);
+  };
+
+  const loadGroups = async () => {
+    const attempts = [
+      () => tryGet('/groups', userid ? { userid } : {}),
+      () => tryGet('/groups', userid ? { user_id: userid } : {}),
+      () => tryGet('/groups', {}), // token-based
+      () => tryGet('/get_groups', userid ? { userid } : {}), // legacy
+      () => tryGet('/get_groups', userid ? { user_id: userid } : {}), // legacy
+      () => tryGet('/get_groups', {}), // legacy
+    ];
+
+    for (const fn of attempts) {
+      try {
+        const res = await fn();
+        const data = res?.data;
+        const list = Array.isArray(data?.groups) ? data.groups : (Array.isArray(data) ? data : []);
+        setGroups(list);
+        return;
+      } catch (e) {
+        // keep trying
+      }
+    }
+    setGroups([]);
+  };
+
+  loadClients();
+  loadGroups();
+}, []);
+
 
   const loadSymbolOptions = async (inputValue) => {
     if (!inputValue || inputValue.length < 1) return [];
@@ -213,21 +274,17 @@ export default function TradeForm() {
                         <div className="text-muted small">Select clients to assign quantities.</div>
                       ) : (
                         selectedClients.map(cid => {
-                          const client = clients.find(c => (c.client_id || c.userid) === cid);
-                          const labelName = (client?.name || client?.display_name || '').trim();
-                          const codeId = client?.client_id || client?.userid || cid;
-                          const label = labelName ? `${labelName} (${codeId})` : codeId;
-
+                          const client = clients.find(c => c.client_id === cid);
                           return (
                             <Row key={cid} className="align-items-center mb-1">
                               <Col xs={6}>
-                                <div className="text-muted small">{label}</div>
+                                <div className="text-muted small">{client?.name || cid}</div>
                               </Col>
                               <Col xs={6}>
                                 <Form.Control
                                   type="number"
                                   min="1"
-                                  value={perClientQty[cid] ?? '1'}
+                                  value={perClientQty[cid] || ''}
                                   onChange={e =>
                                     setPerClientQty(prev => ({ ...prev, [cid]: e.target.value }))
                                   }
@@ -236,7 +293,8 @@ export default function TradeForm() {
                               </Col>
                             </Row>
                           );
-                        }))}
+                        })
+                      )}
                     </div>
                   )}
                 </>
@@ -309,8 +367,8 @@ export default function TradeForm() {
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                disabled={diffQty || qtySelection==='auto'}
-value={qty}
+                disabled={qtySelection==='auto' || diffQty}  // disable single qty when using Diff. Qty.
+                value={qty}
                 onChange={e=>setQty(onlyDigits(e.target.value))}
                 onBlur={()=>setQty(String(Math.max(1, parseInt(qty || '1', 10) || 1)))}
               />
