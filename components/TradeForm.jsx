@@ -584,6 +584,7 @@ export default function TradeForm() {
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
+                disabled={qtySelection==='auto' || diffQty}
                 value={qty}
                 onChange={e=>setQty(onlyDigits(e.target.value))}
                 onBlur={()=>setQty(String(Math.max(1, parseInt(qty || '1', 10) || 1)))}
