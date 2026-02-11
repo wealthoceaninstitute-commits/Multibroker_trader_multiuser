@@ -148,6 +148,7 @@ export default function TradeForm() {
   const [qtySelection, setQtySelection] = useState('manual');  // manual | auto
 
   const [groupAcc, setGroupAcc] = useState(false);
+  const [diffQty, setDiffQty] = useState(false);
   const [multiplier, setMultiplier] = useState(false);
 
   const [qty, setQty] = useState('1');
@@ -164,6 +165,8 @@ export default function TradeForm() {
   const [selectedClients, setSelectedClients] = useState([]);
   const [groups, setGroups] = useState([]);
   const [selectedGroups, setSelectedGroups] = useState([]);
+
+  const [perClientQty, setPerClientQty] = useState({});
   const [perGroupQty, setPerGroupQty] = useState({});
 
   const [busy, setBusy] = useState(false);
@@ -499,16 +502,7 @@ export default function TradeForm() {
                     multiple
                     size={8}
                     value={selectedClients}
-                    onChange={e => {
-  const next = Array.from(e.target.selectedOptions).map(o=>o.value);
-  setSelectedClients(next);
-  setPerClientQty(prev => {
-    const copy = {...prev};
-    next.forEach(id => { if(copy[id]===undefined) copy[id]=qty; });
-    Object.keys(copy).forEach(id => { if(!next.includes(id)) delete copy[id]; });
-    return copy;
-  });
-}
+                    onChange={e=>setSelectedClients(Array.from(e.target.selectedOptions).map(o=>o.value))}
                   >
                     {(clients || []).map(c => (
                       <option key={(c.client_id || c.userid)} value={(c.client_id || c.userid)}>
@@ -525,13 +519,15 @@ export default function TradeForm() {
         <div style={{minWidth:220}}>{cid}</div>
         <Form.Control
           type="number"
-          value={perClientQty[cid]||qty}
+          min={1}
+          value={perClientQty[cid] ?? qty}
           onChange={e=>{
-            const v=e.target.value;
+            const v = e.target.value;
             setPerClientQty(prev=>({...prev,[cid]:v}));
           }}
           style={{width:120}}
         />
+        <small className="text-muted">Qty</small>
       </div>
     ))}
   </div>
