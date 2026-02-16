@@ -106,7 +106,42 @@ useEffect(() => {
         const res = await fn();
         const data = res?.data;
         const list = Array.isArray(data?.groups) ? data.groups : (Array.isArray(data) ? data : []);
-        setGroups(list);
+
+        const normalized = (list || []).map((g) => {
+          const group_name =
+            g?.group_name ??
+            g?.name ??
+            g?.group ??
+            g?.groupName ??
+            g?.title ??
+            '';
+
+          const membersRaw =
+            g?.members ??
+            g?.clients ??
+            g?.client_ids ??
+            g?.clientIds ??
+            g?.accounts ??
+            [];
+
+          const members = Array.isArray(membersRaw)
+            ? membersRaw
+            : (typeof membersRaw === 'string'
+                ? membersRaw.split(',').map(s => s.trim()).filter(Boolean)
+                : []);
+
+          const multiplier = Number(g?.multiplier ?? g?.groupMultiplier ?? g?.mult ?? 1) || 1;
+
+          return {
+            ...g,
+            group_name: String(group_name || '').trim(),
+            no_of_clients: Number(g?.no_of_clients ?? members.length ?? 0) || 0,
+            multiplier,
+            members,
+          };
+        }).filter(g => g.group_name);
+
+        setGroups(normalized);
         return;
       } catch (e) {
         // keep trying
