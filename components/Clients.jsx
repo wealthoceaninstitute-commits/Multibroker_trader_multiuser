@@ -14,34 +14,13 @@ const LS_KEY_GROUPS = "mb_groups_v2_groupMultiplier";
 const LS_KEY_USERID = "mb_logged_in_userid_v1";
 
 // --------- robust user detection ---------
-// 1) Prefer the visible navbar text: "Welcome, <user>"
-// 2) Fallback to localStorage if navbar not available
-const detectUserFromWelcomeText = () => {
+// Read directly from localStorage — no DOM scraping needed
+const getStoredUserId = () => {
   if (typeof window === "undefined") return "";
   try {
-    // Find any element whose text starts with "Welcome,"
-    const all = Array.from(document.querySelectorAll("*"));
-    const el = all.find((n) => {
-      const t = (n?.textContent || "").trim();
-      return /^welcome\s*,/i.test(t);
-    });
-    if (!el) return "";
-
-    // Some navbars render a separate "Logout" link very close,
-    // so textContent can become "Welcome, praLogout" or "Welcome, pra Logout".
-    const t = (el.textContent || "").trim();
-
-    // Take the first token after "Welcome," (until whitespace)
-    const m = t.match(/^welcome\s*,\s*([^\s]+)/i);
-    let u = (m?.[1] || "").trim();
-
-    // If Logout got glued to the username, strip it
-    u = u.replace(/logout$/i, "").trim();
-
-    // Clean leftover separators
-    u = u.replace(/[|,:;]+$/g, "").trim();
-
-    return u;
+    const raw = localStorage.getItem(LS_KEY_USERID) || "";
+    const v = raw.startsWith('"') ? JSON.parse(raw) : raw;
+    return (v || "").trim();
   } catch {
     return "";
   }
@@ -140,29 +119,11 @@ export default function Clients() {
   // ===== Logged-in user (multi-user backend) =====
   const [userId, setUserId] = useState("");
 
-  const getUid = () => {
-    const fromWelcome = detectUserFromWelcomeText();
-    if (fromWelcome) {
-      try { localStorage.setItem(LS_KEY_USERID, JSON.stringify(fromWelcome)); } catch {}
-      return fromWelcome;
-    }
-    try {
-      const v = JSON.parse(localStorage.getItem(LS_KEY_USERID) || '""');
-      return (v || "").trim();
-    } catch {
-      return "";
-    }
-  };
+  const getUid = () => getStoredUserId();
 
-  // Keep userId updated (welcome text loads after hydration sometimes)
+  // Keep userId updated once on mount (no polling needed — value is set at login and stable)
   useEffect(() => {
-    const tick = () => {
-      const uid = getUid();
-      setUserId((prev) => (uid && uid !== prev ? uid : prev));
-    };
-    tick();
-    const t = setInterval(tick, 1200);
-    return () => clearInterval(t);
+    setUserId(getUid());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
