@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Card, Table, Tabs, Tab, Badge } from 'react-bootstrap';
 import api from './api';
 
-const AUTO_REFRESH_MS = 3000;
+const AUTO_REFRESH_MS = 12000; // 12s — sufficient for position data, reduces backend load
 
 export default function Positions() {
   const [openRows, setOpenRows] = useState([]);
@@ -56,21 +56,20 @@ export default function Positions() {
   const toggle = (rowId) => setSelected(prev => ({...prev, [rowId]: !prev[rowId]}));
 
   const closeSelected = async () => {
-    const rows = document.querySelectorAll('#open_positions_table tbody tr');
-    const toClose = [];
-    rows.forEach(tr => {
-      const rowId = tr.getAttribute('data-rowid');
-      if (selected[rowId]) {
-        const tds = tr.querySelectorAll('td');
-        const qty = parseInt(tds[3]?.textContent.trim(), 10);
-        toClose.push({
-          name: tds[1]?.textContent.trim(),
-          symbol: tds[2]?.textContent.trim(),
-          quantity: Math.abs(qty || 0),
-          transaction_type: (qty || 0) > 0 ? 'SELL' : 'BUY'
-        });
-      }
-    });
+    // Build from React state — no DOM scraping needed
+    const toClose = openRows
+      .filter((row, idx) => {
+        const rowId = `${row.name}-${row.symbol}-${row.net_profit ?? idx}`;
+        return selected[rowId];
+      })
+      .map((row) => ({
+        name: row.name ?? '',
+        client_id: row.client_id ?? '',
+        symbol: row.symbol ?? '',
+        quantity: Math.abs(Number(row.quantity) || 0),
+        transaction_type: (Number(row.quantity) || 0) > 0 ? 'SELL' : 'BUY',
+      }));
+
     if (toClose.length === 0) return alert('No positions selected.');
     try {
       busyRef.current = true; // pause polling
