@@ -29,7 +29,7 @@ const XCircle = (props) => (
   </svg>
 );
 
-const AUTO_REFRESH_MS = 3000;
+const AUTO_REFRESH_MS = 12000; // 12s — sufficient for order book, reduces backend load
 
 /* display -> canonical order type */
 const DISPLAY_TO_CANON = {
@@ -128,6 +128,7 @@ export default function Orders() {
   /* ===== fetch ===== */
   const fetchAll = async () => {
     if (busyRef.current) return;
+    if (typeof document !== 'undefined' && document.hidden) return; // don't poll when tab is hidden
     if (typeof document !== 'undefined' && document.hidden) return;
 
     if (abortRef.current) abortRef.current.abort();
