@@ -48,90 +48,44 @@ export default function TradeForm() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
 
-  // ---- load user-scoped Clients & Groups (backend compatibility) ----
-useEffect(() => {
-  const detectUserId = () => {
-    if (typeof window === 'undefined') return '';
-    // preferred keys used across the app
-    const a = window.localStorage.getItem('mb_logged_in_userid_v1') || '';
-    const b = window.localStorage.getItem('mb_user') || '';
-    const c = window.localStorage.getItem('mb_logged_in_userid') || '';
-    return (a || b || c || '').replace(/(^"|"$)/g, '');
-  };
+  // ---- load user-scoped Clients & Groups ----
+  useEffect(() => {
+    const detectUserId = () => {
+      if (typeof window === 'undefined') return '';
+      const a = window.localStorage.getItem('mb_logged_in_userid_v1') || '';
+      const b = window.localStorage.getItem('mb_user') || '';
+      const c = window.localStorage.getItem('mb_logged_in_userid') || '';
+      return (a || b || c || '').replace(/(^"|"$)/g, '');
+    };
 
-  const userid = detectUserId();
-
-  const tryGet = async (path, params = {}) => {
-    // attach x-user-id header since some backend builds depend on it
+    const userid = detectUserId();
     const headers = userid ? { 'x-user-id': userid } : {};
-    return api.get(path, { params, headers });
-  };
+    const params = userid ? { userid } : {};
 
-  const loadClients = async () => {
-    const attempts = [
-      () => tryGet('/clients', userid ? { userid } : {}),
-      () => tryGet('/clients', userid ? { user_id: userid } : {}),
-      () => tryGet('/clients', {}), // token-based (backend may infer user)
-      () => tryGet('/get_clients', userid ? { userid } : {}), // legacy
-      () => tryGet('/get_clients', userid ? { user_id: userid } : {}), // legacy
-      () => tryGet('/get_clients', {}), // legacy
-    ];
-
-    for (const fn of attempts) {
+    const loadClients = async () => {
       try {
-        const res = await fn();
+        const res = await api.get('/clients', { params, headers });
         const data = res?.data;
         const list = Array.isArray(data?.clients) ? data.clients : (Array.isArray(data) ? data : []);
         setClients(list);
-        return;
-      } catch (e) {
-        // keep trying
+      } catch {
+        setClients([]);
       }
-    }
-    setClients([]);
-  };
+    };
 
-  const loadGroups = async () => {
-    const attempts = [
-      () => tryGet('/groups', userid ? { userid } : {}),
-      () => tryGet('/groups', userid ? { user_id: userid } : {}),
-      () => tryGet('/groups', {}), // token-based
-      () => tryGet('/get_groups', userid ? { userid } : {}), // legacy
-      () => tryGet('/get_groups', userid ? { user_id: userid } : {}), // legacy
-      () => tryGet('/get_groups', {}), // legacy
-    ];
-
-    for (const fn of attempts) {
+    const loadGroups = async () => {
       try {
-        const res = await fn();
+        const res = await api.get('/groups', { params, headers });
         const data = res?.data;
         const list = Array.isArray(data?.groups) ? data.groups : (Array.isArray(data) ? data : []);
 
         const normalized = (list || []).map((g) => {
-          const group_name =
-            g?.group_name ??
-            g?.name ??
-            g?.group ??
-            g?.groupName ??
-            g?.title ??
-            '';
-
-          const membersRaw =
-            g?.members ??
-            g?.clients ??
-            g?.client_ids ??
-            g?.clientIds ??
-            g?.accounts ??
-            [];
-
+          const group_name = g?.group_name ?? g?.name ?? g?.group ?? g?.groupName ?? g?.title ?? '';
+          const membersRaw = g?.members ?? g?.clients ?? g?.client_ids ?? g?.clientIds ?? g?.accounts ?? [];
           const members = Array.isArray(membersRaw)
             ? membersRaw
-            : (typeof membersRaw === 'string'
-                ? membersRaw.split(',').map(s => s.trim()).filter(Boolean)
-                : []);
-
+            : (typeof membersRaw === 'string' ? membersRaw.split(',').map(s => s.trim()).filter(Boolean) : []);
           const multiplier = Number(g?.multiplier ?? g?.groupMultiplier ?? g?.mult ?? 1) || 1;
-
           return {
             ...g,
             group_name: String(group_name || '').trim(),
@@ -142,17 +96,14 @@ useEffect(() => {
         }).filter(g => g.group_name);
 
         setGroups(normalized);
-        return;
-      } catch (e) {
-        // keep trying
+      } catch {
+        setGroups([]);
       }
-    }
-    setGroups([]);
-  };
+    };
 
-  loadClients();
-  loadGroups();
-}, []);
+    loadClients();
+    loadGroups();
+  }, []);
 
 
   const loadSymbolOptions = async (inputValue) => {
