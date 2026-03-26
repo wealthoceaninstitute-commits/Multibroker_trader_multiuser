@@ -15,7 +15,7 @@ const toIntOr = (v, fallback = 1) => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
-const TRADE_FORM_STORAGE_KEY = 'woi-trade-form-v5';
+const TRADE_FORM_STORAGE_KEY = 'woi-trade-form-v6';
 
 const detectUserId = () => {
   if (typeof window === 'undefined') return '';
@@ -60,7 +60,6 @@ const extractBrokerResultSummary = (data) => {
     return { ok: false, message: 'Empty response from server.' };
   }
 
-  // direct broker response
   if (typeof data.status === 'string') {
     const ok = data.status.toUpperCase() === 'SUCCESS';
     return {
@@ -71,7 +70,6 @@ const extractBrokerResultSummary = (data) => {
     };
   }
 
-  // wrapped multi-client response
   if (data.responses && typeof data.responses === 'object') {
     const entries = Object.entries(data.responses);
     if (!entries.length) {
@@ -230,7 +228,7 @@ export default function TradeForm() {
     try {
       window.localStorage.setItem(TRADE_FORM_STORAGE_KEY, JSON.stringify(formState));
     } catch {
-      // ignore storage errors
+      // ignore
     }
   }, [
     action,
@@ -363,13 +361,13 @@ export default function TradeForm() {
         multiplier,
       };
 
-     const resp = await api.post('/place_order', payload);
-     const summary = extractBrokerResultSummary(resp?.data);
+      const resp = await api.post('/place_order', payload);
+      const summary = extractBrokerResultSummary(resp?.data);
 
-    setToast({
-    variant: summary.ok ? 'success' : 'danger',
-    text: summary.message,
-   });
+      setToast({
+        variant: summary.ok ? 'success' : 'danger',
+        text: summary.message,
+      });
     } catch (err) {
       const backendMsg =
         err.response?.data?.detail ||
@@ -778,16 +776,17 @@ export default function TradeForm() {
           </Col>
         </Row>
 
-       {toast && (
-         <Alert
-       variant={toast.variant}
-           onClose={() => setToast(null)}
-           dismissible
-    className="mt-3 toast-preline"
-  >
-    {toast.text}
-  </Alert>
-)}
+        {toast && (
+          <Alert
+            variant={toast.variant}
+            onClose={() => setToast(null)}
+            dismissible
+            className="mt-3 toast-preline"
+          >
+            {toast.text}
+          </Alert>
+        )}
+      </Form>
 
       <style jsx>{`
         .cardPad { padding: 1rem 2.5rem 2.75rem; }
@@ -807,6 +806,7 @@ export default function TradeForm() {
           margin: 0 16px 8px;
           border-bottom: 1px dashed #d7e3ff;
         }
+
         .formSection:last-of-type {
           border-bottom: 0;
           margin-bottom: 0;
@@ -820,13 +820,18 @@ export default function TradeForm() {
           accent-color: #0d6efd;
         }
 
-        .btn-nudge { margin-left: 3rem; padding-bottom: 0.25rem; }
+        .btn-nudge {
+          margin-left: 3rem;
+          padding-bottom: 0.25rem;
+        }
 
-        .text-muted.small { font-size: 0.85rem; }
+        .text-muted.small {
+          font-size: 0.85rem;
+        }
 
         .toast-preline {
-  white-space: pre-line;
-}
+          white-space: pre-line;
+        }
       `}</style>
     </Card>
   );
