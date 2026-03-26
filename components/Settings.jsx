@@ -2,15 +2,7 @@
 
 import { useState, useEffect } from "react";
 
-// ── Inline styles matching the existing app ──
 const S = {
-  page: {
-    background: "#f3f4f6",
-    minHeight: "100vh",
-    fontFamily: "'Segoe UI', system-ui, sans-serif",
-    fontSize: 14,
-    color: "#1f2937",
-  },
   card: {
     background: "#fff",
     border: "1px solid #e5e7eb",
@@ -51,7 +43,6 @@ const S = {
     color: "#111827",
     outline: "none",
     background: "#fff",
-    transition: "border-color 0.15s",
   },
   btnRow: {
     display: "flex",
@@ -206,7 +197,20 @@ export default function SettingsTab({ userId = "", apiBase = "" }) {
 
         if (ok && data?.success) {
           setProfile((p) => ({ ...p, ...(data.profile || {}) }));
-          setDefaults((d) => ({ ...d, ...(data.trade_defaults || {}) }));
+          setDefaults((d) => ({
+            ...d,
+            ...(data.trade_defaults || {}),
+            order_duration: String(
+              data?.trade_defaults?.order_duration || d.order_duration
+            ).toUpperCase(),
+            order_type: String(
+              data?.trade_defaults?.order_type || d.order_type
+            ).toUpperCase(),
+            product_type: String(
+              data?.trade_defaults?.product_type || d.product_type
+            ).toUpperCase(),
+            action: String(data?.trade_defaults?.action || d.action).toUpperCase(),
+          }));
         }
       })
       .catch(() => {})
@@ -233,7 +237,12 @@ export default function SettingsTab({ userId = "", apiBase = "" }) {
         body: JSON.stringify({
           userid: userId,
           profile,
-          trade_defaults: defaults,
+          trade_defaults: {
+            action: String(defaults.action || "BUY").toUpperCase(),
+            product_type: String(defaults.product_type || "DELIVERY").toUpperCase(),
+            order_type: String(defaults.order_type || "MARKET").toUpperCase(),
+            order_duration: String(defaults.order_duration || "DAY").toUpperCase(),
+          },
         }),
       });
 
@@ -303,27 +312,15 @@ export default function SettingsTab({ userId = "", apiBase = "" }) {
   };
 
   if (loading) {
-    return (
-      <div style={{ padding: 40, color: "#9ca3af", fontSize: 13 }}>
-        Loading settings...
-      </div>
-    );
+    return <div style={{ padding: 40, color: "#9ca3af", fontSize: 13 }}>Loading settings...</div>;
   }
 
   if (!userId) {
-    return (
-      <div style={{ padding: 24, color: "#dc2626", fontSize: 13 }}>
-        Missing userId.
-      </div>
-    );
+    return <div style={{ padding: 24, color: "#dc2626", fontSize: 13 }}>Missing userId.</div>;
   }
 
   if (!BASE) {
-    return (
-      <div style={{ padding: 24, color: "#dc2626", fontSize: 13 }}>
-        Missing API base URL.
-      </div>
-    );
+    return <div style={{ padding: 24, color: "#dc2626", fontSize: 13 }}>Missing API base URL.</div>;
   }
 
   return (
@@ -386,9 +383,7 @@ export default function SettingsTab({ userId = "", apiBase = "" }) {
               </button>
             </div>
 
-            <span style={S.hint}>
-              Message @userinfobot on Telegram to get your Chat ID
-            </span>
+            <span style={S.hint}>Message @userinfobot on Telegram to get your Chat ID</span>
 
             {tgToast && (
               <span style={{ ...S.toast(tgToast.ok), marginTop: 6 }}>
@@ -427,8 +422,8 @@ export default function SettingsTab({ userId = "", apiBase = "" }) {
               options={[
                 { label: "DAY", value: "DAY" },
                 { label: "IOC", value: "IOC" },
+                { label: "GTC", value: "GTC" },
                 { label: "GTD", value: "GTD" },
-                { label: "EOS", value: "EOS" },
               ]}
             />
           </div>
