@@ -149,19 +149,22 @@ export default function TradeForm() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
 
-  // ── Load user trade defaults from Settings (only when no saved form state) ──
+  // ── Load user trade defaults from Settings ──
+  // Always fetch on mount. Server settings WIN over stale localStorage so that
+  // saving in the Settings tab is immediately reflected here.
+  // We track a ref so we only auto-apply once per mount (not on every render).
+  const _settingsApplied = useRef(false);
   useEffect(() => {
+    if (_settingsApplied.current) return;
     const uid = getUserid();
     if (!uid) return;
-    const hasSaved = !!loadSavedForm();
-    // If user has a saved form state in localStorage, respect it.
-    // Only apply server defaults on a fresh session (no saved state).
-    if (hasSaved) return;
     api.get('/user_settings', { params: { userid: uid } })
       .then((res) => {
         const d = res.data;
         if (!d?.success || !d.trade_defaults) return;
+        _settingsApplied.current = true;
         const td = d.trade_defaults;
+        // Apply each field — these override whatever localStorage had
         if (td.action)         setAction(td.action.toLowerCase());
         if (td.product_type)   setProductType(td.product_type.toUpperCase());
         if (td.order_type)     setOrderType(td.order_type.toUpperCase());
