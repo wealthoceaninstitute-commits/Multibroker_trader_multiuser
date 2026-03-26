@@ -7,6 +7,7 @@ import {
 } from 'react-bootstrap';
 import AsyncSelect from 'react-select/async';
 import api from './api';
+import { getUserid } from '../src/lib/auth';
 
 // helpers
 const onlyDigits = (v) => (v ?? '').replace(/[^\d]/g, '');
@@ -147,6 +148,27 @@ export default function TradeForm() {
 
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+
+  // ── Load user trade defaults from Settings (only when no saved form state) ──
+  useEffect(() => {
+    const uid = getUserid();
+    if (!uid) return;
+    const hasSaved = !!loadSavedForm();
+    // If user has a saved form state in localStorage, respect it.
+    // Only apply server defaults on a fresh session (no saved state).
+    if (hasSaved) return;
+    api.get('/user_settings', { params: { userid: uid } })
+      .then((res) => {
+        const d = res.data;
+        if (!d?.success || !d.trade_defaults) return;
+        const td = d.trade_defaults;
+        if (td.action)         setAction(td.action.toLowerCase());
+        if (td.product_type)   setProductType(td.product_type.toUpperCase());
+        if (td.order_type)     setOrderType(td.order_type.toUpperCase());
+        if (td.order_duration) setTimeForce(td.order_duration.toUpperCase());
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const userid = detectUserId();
