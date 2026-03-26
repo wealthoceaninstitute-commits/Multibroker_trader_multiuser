@@ -15,7 +15,7 @@ const toIntOr = (v, fallback = 1) => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
-const TRADE_FORM_STORAGE_KEY = 'woi-trade-form-v2';
+const TRADE_FORM_STORAGE_KEY = 'woi-trade-form-v3';
 
 const detectUserId = () => {
   if (typeof window === 'undefined') return '';
@@ -35,14 +35,32 @@ const loadSavedForm = () => {
   }
 };
 
+const formatGoodTillDate = (yyyyMmDd) => {
+  if (!yyyyMmDd) return '';
+  const [y, m, d] = yyyyMmDd.split('-');
+  if (!y || !m || !d) return '';
+  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const mm = Number(m);
+  if (!mm || mm < 1 || mm > 12) return '';
+  return `${d}-${months[mm - 1]}-${y}`;
+};
+
+const todayInputDate = () => {
+  const dt = new Date();
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
 export default function TradeForm() {
   const saved = loadSavedForm();
 
   // core state
   const [action, setAction] = useState(saved?.action ?? 'buy');
-  const [productType, setProductType] = useState(saved?.productType ?? 'DELIVERY'); // default changed from VALUEPLUS -> DELIVERY
-  const [orderType, setOrderType] = useState(saved?.orderType ?? 'LIMIT'); // LIMIT | MARKET | STOPLOSS | SL MARKET
-  const [qtySelection, setQtySelection] = useState(saved?.qtySelection ?? 'manual'); // manual | auto
+  const [productType, setProductType] = useState(saved?.productType ?? 'DELIVERY');
+  const [orderType, setOrderType] = useState(saved?.orderType ?? 'LIMIT');
+  const [qtySelection, setQtySelection] = useState(saved?.qtySelection ?? 'manual');
   const [groupAcc, setGroupAcc] = useState(saved?.groupAcc ?? false);
   const [diffQty, setDiffQty] = useState(saved?.diffQty ?? false);
   const [multiplier, setMultiplier] = useState(saved?.multiplier ?? false);
@@ -54,8 +72,9 @@ export default function TradeForm() {
   const [trigPrice, setTrigPrice] = useState(saved?.trigPrice ?? 0);
   const [disclosedQty, setDisclosedQty] = useState(saved?.disclosedQty ?? 0);
 
-  // Order Duration: only DAY/IOC radios; "AMO Order" checkbox
-  const [timeForce, setTimeForce] = useState(saved?.timeForce ?? 'DAY'); // 'DAY' | 'IOC'
+  // Order Duration
+  const [timeForce, setTimeForce] = useState(saved?.timeForce ?? 'DAY'); // DAY | IOC | GTC | GTD
+  const [goodTillDate, setGoodTillDate] = useState(saved?.goodTillDate ?? todayInputDate());
   const [amo, setAmo] = useState(saved?.amo ?? false);
 
   const [clients, setClients] = useState([]);
@@ -98,8 +117,11 @@ export default function TradeForm() {
           const membersRaw = g?.members ?? g?.clients ?? g?.client_ids ?? g?.clientIds ?? g?.accounts ?? [];
           const members = Array.isArray(membersRaw)
             ? membersRaw
-            : (typeof membersRaw === 'string' ? membersRaw.split(',').map((s) => s.trim()).filter(Boolean) : []);
+            : (typeof membersRaw === 'string'
+              ? membersRaw.split(',').map((s) => s.trim()).filter(Boolean)
+              : []);
           const groupMultiplier = Number(g?.multiplier ?? g?.groupMultiplier ?? g?.mult ?? 1) || 1;
+
           return {
             ...g,
             group_name: String(group_name || '').trim(),
@@ -138,6 +160,7 @@ export default function TradeForm() {
       trigPrice,
       disclosedQty,
       timeForce,
+      goodTillDate,
       amo,
       selectedClients,
       selectedGroups,
@@ -168,6 +191,7 @@ export default function TradeForm() {
     trigPrice,
     disclosedQty,
     timeForce,
+    goodTillDate,
     amo,
     selectedClients,
     selectedGroups,
@@ -202,6 +226,9 @@ export default function TradeForm() {
     });
   }, [groups]);
 
+  // if duration changes away from GTD, keep date but no need to clear it
+  // that way user can come back to GTD and their date is still there
+
   const loadSymbolOptions = async (inputValue) => {
     if (!inputValue || inputValue.length < 1) return [];
     const res = await api.get('/search_symbols', { params: { q: inputValue, exchange } });
@@ -223,7 +250,6 @@ export default function TradeForm() {
   const submit = async (e) => {
     e.preventDefault();
 
-    // basic validations
     if (groupAcc) {
       if (selectedGroups.length === 0) {
         setToast({ variant: 'warning', text: 'Please select at least one group.' });
@@ -234,9 +260,13 @@ export default function TradeForm() {
       return;
     }
 
-    // symbol validation to avoid backend crash / network error
     if (!symbol || !symbol.value) {
       setToast({ variant: 'warning', text: 'Please select a symbol before placing the order.' });
+      return;
+    }
+
+    if (timeForce === 'GTD' && !goodTillDate) {
+      setToast({ variant: 'warning', text: 'Please select Good Till Date.' });
       return;
     }
 
@@ -264,6 +294,7 @@ export default function TradeForm() {
         triggerprice: Number(trigPrice) || 0,
         disclosedquantity: Number(disclosedQty) || 0,
         amoorder: amo ? 'Y' : 'N',
+        goodtilldate: timeForce === 'GTD' ? formatGoodTillDate(goodTillDate) : '',
         qtySelection,
         quantityinlot: safeSingleQty,
         perClientQty: safePerClientQty,
@@ -271,6 +302,7 @@ export default function TradeForm() {
         diffQty,
         multiplier,
       };
+
       const resp = await api.post('/place_order', payload);
       setToast({ variant: 'success', text: 'Order placed. Response: ' + JSON.stringify(resp.data) });
     } catch (err) {
@@ -483,7 +515,6 @@ export default function TradeForm() {
 
         {/* Section: Details Grid */}
         <div className="formSection">
-          {/* Row D1 — Qty | Entity + Qty Mode */}
           <Row className="g-2 mb-2 align-items-end">
             <Col md={5}>
               <Form.Label className="label-tight">Qty</Form.Label>
@@ -559,7 +590,6 @@ export default function TradeForm() {
             </Col>
           </Row>
 
-          {/* Row D2 — Exchange | Symbol */}
           <Row className="g-2 mb-2 align-items-end">
             <Col md={5}>
               <Form.Label className="label-tight">Exchange</Form.Label>
@@ -588,7 +618,6 @@ export default function TradeForm() {
             </Col>
           </Row>
 
-          {/* Row D3 — Price | Trig. Price & Disclosed Qty */}
           <Row className="g-2 align-items-end">
             <Col md={5}>
               <Form.Label className="label-tight">Price</Form.Label>
@@ -628,27 +657,46 @@ export default function TradeForm() {
         {/* Section: Duration */}
         <div className="formSection">
           <Row className="g-2 align-items-center">
-            <Col md="auto" className="d-flex align-items-center flex-wrap gap-3">
-              <Form.Label className="mb-0">Order Duration</Form.Label>
-              {['DAY', 'IOC'].map((tf) => (
+            <Col md={12}>
+              <div className="d-flex align-items-center flex-wrap gap-3">
+                <Form.Label className="mb-0">Order Duration</Form.Label>
+                {['DAY', 'IOC', 'GTC', 'GTD'].map((tf) => (
+                  <Form.Check
+                    key={tf}
+                    inline
+                    type="radio"
+                    name="timeForce"
+                    label={tf}
+                    checked={timeForce === tf}
+                    onChange={() => setTimeForce(tf)}
+                  />
+                ))}
                 <Form.Check
-                  key={tf}
                   inline
-                  type="radio"
-                  name="timeForce"
-                  label={tf}
-                  checked={timeForce === tf}
-                  onChange={() => setTimeForce(tf)}
+                  type="checkbox"
+                  id="amo"
+                  label="AMO Order"
+                  checked={amo}
+                  onChange={(e) => setAmo(e.target.checked)}
                 />
-              ))}
-              <Form.Check
-                inline
-                type="checkbox"
-                id="amo"
-                label="AMO Order"
-                checked={amo}
-                onChange={(e) => setAmo(e.target.checked)}
-              />
+              </div>
+
+              {timeForce === 'GTD' && (
+                <Row className="g-2 mt-2 align-items-end">
+                  <Col md={4}>
+                    <Form.Label className="label-tight">Good Till Date</Form.Label>
+                    <Form.Control
+                      type="date"
+                      value={goodTillDate}
+                      min={todayInputDate()}
+                      onChange={(e) => setGoodTillDate(e.target.value)}
+                    />
+                    <div className="form-text">
+                      Payload value: {formatGoodTillDate(goodTillDate) || '-'}
+                    </div>
+                  </Col>
+                </Row>
+              )}
             </Col>
           </Row>
         </div>
