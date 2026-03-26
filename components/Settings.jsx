@@ -442,21 +442,22 @@ export default function SettingsTab({ userId = "", apiBase = "" }) {
             />
           </div>
 
-          <div style={S.fieldWrap}>
-            <label style={S.label}>Default Product Type</label>
-            <ChipSelect
-              value={defaults.product_type}
-              onChange={(v) => setDefaults((d) => ({ ...d, product_type: v }))}
-              options={[
-                { label: "DELIVERY", value: "DELIVERY" },
-                { label: "NORMAL", value: "NORMAL" },
-                { label: "BTST", value: "BTST" },
-                { label: "MTF", value: "MTF" },
-              ]}
-            />
-          </div>
-        </div>
-      </div>
+          {/* Product Type */}
+<div style={S.fieldWrap}>
+  <label style={S.label}>Default Product Type</label>
+  <ChipSelect
+    value={defaults.product_type}
+    onChange={(v) => setDefaults((d) => ({ ...d, product_type: v }))}
+    options={[
+      { label: "INTRADAY",   value: "VALUEPLUS"  },
+      { label: "DELIVERY",   value: "DELIVERY"   },
+      { label: "NORMAL",     value: "NORMAL"     },
+      { label: "SELLFROMDP", value: "SELLFROMDP" },
+      { label: "BTST",       value: "BTST"       },
+      { label: "MTF",        value: "MTF"        },
+    ]}
+  />
+</div>
 
       <div style={S.btnRow}>
         <button
