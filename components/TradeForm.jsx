@@ -1,4 +1,4 @@
-// TradeForm.jsx — tighter spacing + buttons nudged right ~1/2" + bluish card tone
+// TradeForm.jsx — persistent selections + GTD + broker-aware success/error toast
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -15,7 +15,7 @@ const toIntOr = (v, fallback = 1) => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
-const TRADE_FORM_STORAGE_KEY = 'woi-trade-form-v3';
+const TRADE_FORM_STORAGE_KEY = 'woi-trade-form-v4';
 
 const detectUserId = () => {
   if (typeof window === 'undefined') return '';
@@ -35,16 +35,6 @@ const loadSavedForm = () => {
   }
 };
 
-const formatGoodTillDate = (yyyyMmDd) => {
-  if (!yyyyMmDd) return '';
-  const [y, m, d] = yyyyMmDd.split('-');
-  if (!y || !m || !d) return '';
-  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-  const mm = Number(m);
-  if (!mm || mm < 1 || mm > 12) return '';
-  return `${d}-${months[mm - 1]}-${y}`;
-};
-
 const todayInputDate = () => {
   const dt = new Date();
   const y = dt.getFullYear();
@@ -53,10 +43,71 @@ const todayInputDate = () => {
   return `${y}-${m}-${d}`;
 };
 
+const formatGoodTillDate = (yyyyMmDd) => {
+  if (!yyyyMmDd) return '';
+  const [y, m, d] = yyyyMmDd.split('-');
+  if (!y || !m || !d) return '';
+
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const mm = Number(m);
+  if (!mm || mm < 1 || mm > 12) return '';
+
+  return `${d}-${months[mm - 1]}-${y}`;
+};
+
+const extractBrokerResultSummary = (data) => {
+  if (!data) {
+    return { ok: false, message: 'Empty response from server.' };
+  }
+
+  if (typeof data.status === 'string') {
+    const ok = data.status.toUpperCase() === 'SUCCESS';
+    return {
+      ok,
+      message: data.message || (ok ? 'Order placed successfully.' : 'Order failed.'),
+    };
+  }
+
+  if (data.responses && typeof data.responses === 'object') {
+    const entries = Object.entries(data.responses);
+    if (!entries.length) {
+      return { ok: false, message: 'No broker response entries found.' };
+    }
+
+    const failed = entries.filter(([, r]) => String(r?.status || '').toUpperCase() !== 'SUCCESS');
+
+    if (failed.length > 0) {
+      const parts = failed.map(([clientId, r]) => {
+        const msg = r?.message || r?.error || 'Order failed';
+        const code = r?.errorcode ? ` (${r.errorcode})` : '';
+        return `${clientId}: ${msg}${code}`;
+      });
+      return {
+        ok: false,
+        message: parts.join(' | '),
+      };
+    }
+
+    const successParts = entries.map(([clientId, r]) => {
+      const uoid = r?.uniqueorderid ? ` [${r.uniqueorderid}]` : '';
+      return `${clientId}${uoid}`;
+    });
+
+    return {
+      ok: true,
+      message: `Order placed successfully: ${successParts.join(', ')}`,
+    };
+  }
+
+  return {
+    ok: false,
+    message: data.message || data.error || 'Unexpected response from server.',
+  };
+};
+
 export default function TradeForm() {
   const saved = loadSavedForm();
 
-  // core state
   const [action, setAction] = useState(saved?.action ?? 'buy');
   const [productType, setProductType] = useState(saved?.productType ?? 'DELIVERY');
   const [orderType, setOrderType] = useState(saved?.orderType ?? 'LIMIT');
@@ -72,8 +123,7 @@ export default function TradeForm() {
   const [trigPrice, setTrigPrice] = useState(saved?.trigPrice ?? 0);
   const [disclosedQty, setDisclosedQty] = useState(saved?.disclosedQty ?? 0);
 
-  // Order Duration
-  const [timeForce, setTimeForce] = useState(saved?.timeForce ?? 'DAY'); // DAY | IOC | GTC | GTD
+  const [timeForce, setTimeForce] = useState(saved?.timeForce ?? 'DAY');
   const [goodTillDate, setGoodTillDate] = useState(saved?.goodTillDate ?? todayInputDate());
   const [amo, setAmo] = useState(saved?.amo ?? false);
 
@@ -89,7 +139,6 @@ export default function TradeForm() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
 
-  // ---- load user-scoped Clients & Groups ----
   useEffect(() => {
     const userid = detectUserId();
     const headers = userid ? { 'x-user-id': userid } : {};
@@ -141,7 +190,6 @@ export default function TradeForm() {
     loadGroups();
   }, []);
 
-  // persist form state across tab switches / remounts
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -169,12 +217,9 @@ export default function TradeForm() {
     };
 
     try {
-      window.localStorage.setItem(
-        TRADE_FORM_STORAGE_KEY,
-        JSON.stringify(formState)
-      );
+      window.localStorage.setItem(TRADE_FORM_STORAGE_KEY, JSON.stringify(formState));
     } catch {
-      // ignore storage errors
+      // ignore
     }
   }, [
     action,
@@ -199,7 +244,6 @@ export default function TradeForm() {
     perGroupQty,
   ]);
 
-  // clean invalid saved selections after clients/groups load
   useEffect(() => {
     if (!clients.length) return;
     setSelectedClients((prev) =>
@@ -226,9 +270,6 @@ export default function TradeForm() {
     });
   }, [groups]);
 
-  // if duration changes away from GTD, keep date but no need to clear it
-  // that way user can come back to GTD and their date is still there
-
   const loadSymbolOptions = async (inputValue) => {
     if (!inputValue || inputValue.length < 1) return [];
     const res = await api.get('/search_symbols', { params: { q: inputValue, exchange } });
@@ -239,7 +280,6 @@ export default function TradeForm() {
     }));
   };
 
-  // derived
   const isStopOrder = orderType === 'STOPLOSS' || orderType === 'SL MARKET';
 
   const selectedClientMap = useMemo(
@@ -265,15 +305,24 @@ export default function TradeForm() {
       return;
     }
 
-    if (timeForce === 'GTD' && !goodTillDate) {
-      setToast({ variant: 'warning', text: 'Please select Good Till Date.' });
-      return;
+    if (timeForce === 'GTD') {
+      if (!goodTillDate) {
+        setToast({ variant: 'warning', text: 'Please select Good Till Date.' });
+        return;
+      }
+      const today = todayInputDate();
+      if (goodTillDate < today) {
+        setToast({ variant: 'warning', text: 'Good Till Date cannot be earlier than today.' });
+        return;
+      }
     }
 
     const safeSingleQty = qtySelection === 'auto' ? 0 : toIntOr(qty, 1);
+
     const safePerClientQty = (!groupAcc && diffQty)
       ? Object.fromEntries(selectedClients.map((cid) => [cid, toIntOr(perClientQty[cid], 1)]))
       : {};
+
     const safePerGroupQty = (groupAcc && diffQty)
       ? Object.fromEntries(selectedGroups.map((gn) => [gn, toIntOr(perGroupQty[gn], 1)]))
       : {};
@@ -304,14 +353,23 @@ export default function TradeForm() {
       };
 
       const resp = await api.post('/place_order', payload);
-      setToast({ variant: 'success', text: 'Order placed. Response: ' + JSON.stringify(resp.data) });
+      const summary = extractBrokerResultSummary(resp?.data);
+
+      setToast({
+        variant: summary.ok ? 'success' : 'danger',
+        text: summary.message,
+      });
     } catch (err) {
       const backendMsg =
         err.response?.data?.detail ||
         err.response?.data?.message ||
         err.response?.data?.error ||
         err.message;
-      setToast({ variant: 'danger', text: 'Error: ' + backendMsg });
+
+      setToast({
+        variant: 'danger',
+        text: 'Error: ' + backendMsg,
+      });
     } finally {
       setBusy(false);
     }
@@ -331,7 +389,6 @@ export default function TradeForm() {
   return (
     <Card className="shadow-sm cardPad blueTone">
       <Form onSubmit={submit}>
-        {/* Section: Action */}
         <div className="formSection">
           <Row className="g-2 align-items-center">
             <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
@@ -358,7 +415,6 @@ export default function TradeForm() {
           </Row>
         </div>
 
-        {/* Section: Product */}
         <div className="formSection">
           <Row className="g-2 align-items-center">
             <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
@@ -378,7 +434,6 @@ export default function TradeForm() {
           </Row>
         </div>
 
-        {/* Section: Order Type */}
         <div className="formSection">
           <Row className="g-2 align-items-center">
             <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
@@ -398,7 +453,6 @@ export default function TradeForm() {
           </Row>
         </div>
 
-        {/* Section: Clients / Groups */}
         <div className="formSection">
           <Row>
             <Col xs={12}>
@@ -513,7 +567,6 @@ export default function TradeForm() {
           </Row>
         </div>
 
-        {/* Section: Details Grid */}
         <div className="formSection">
           <Row className="g-2 mb-2 align-items-end">
             <Col md={5}>
@@ -654,7 +707,6 @@ export default function TradeForm() {
           </Row>
         </div>
 
-        {/* Section: Duration */}
         <div className="formSection">
           <Row className="g-2 align-items-center">
             <Col md={12}>
@@ -701,7 +753,6 @@ export default function TradeForm() {
           </Row>
         </div>
 
-        {/* Buttons */}
         <Row className="mt-2">
           <Col className="text-start">
             <div className="btn-nudge">
