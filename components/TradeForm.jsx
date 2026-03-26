@@ -65,39 +65,48 @@ const extractBrokerResultSummary = (data) => {
     const ok = data.status.toUpperCase() === 'SUCCESS';
     return {
       ok,
-      message: data.message || (ok ? 'Order placed successfully.' : 'Order failed.'),
+      message: ok
+        ? `1 order placed successfully\n\nClient-wise status:\n• ${data.message || 'SUCCESS'}`
+        : `0 orders placed successfully, 1 order failed\n\nClient-wise status:\n• ${data.message || 'FAILED'}`,
     };
   }
 
-  // wrapper response with per-client responses
+  // wrapped multi-client response
   if (data.responses && typeof data.responses === 'object') {
     const entries = Object.entries(data.responses);
     if (!entries.length) {
       return { ok: false, message: 'No broker response entries found.' };
     }
 
-    const failed = entries.filter(([, r]) => String(r?.status || '').toUpperCase() !== 'SUCCESS');
+    const normalized = entries.map(([clientId, r]) => {
+      const status = String(r?.status || '').toUpperCase();
+      const success = status === 'SUCCESS';
+      const message = r?.message || r?.error || (success ? 'Order placed successfully' : 'Order failed');
+      const orderId = r?.uniqueorderid ? ` [${r.uniqueorderid}]` : '';
+      const code = r?.errorcode ? ` (${r.errorcode})` : '';
 
-    if (failed.length > 0) {
-      const parts = failed.map(([clientId, r]) => {
-        const msg = r?.message || r?.error || 'Order failed';
-        const code = r?.errorcode ? ` (${r.errorcode})` : '';
-        return `${clientId}: ${msg}${code}`;
-      });
       return {
-        ok: false,
-        message: parts.join(' | '),
+        clientId,
+        success,
+        line: `• ${clientId}: ${success ? 'SUCCESS' : 'ERROR'} - ${message}${code}${orderId}`,
       };
-    }
-
-    const successParts = entries.map(([clientId, r]) => {
-      const uoid = r?.uniqueorderid ? ` [${r.uniqueorderid}]` : '';
-      return `${clientId}${uoid}`;
     });
 
+    const successCount = normalized.filter((x) => x.success).length;
+    const failCount = normalized.length - successCount;
+
+    let header = '';
+    if (successCount > 0 && failCount === 0) {
+      header = `${successCount} order${successCount > 1 ? 's' : ''} placed successfully`;
+    } else if (successCount === 0 && failCount > 0) {
+      header = `${failCount} order${failCount > 1 ? 's' : ''} failed`;
+    } else {
+      header = `${successCount} order${successCount > 1 ? 's' : ''} placed successfully, ${failCount} order${failCount > 1 ? 's' : ''} failed`;
+    }
+
     return {
-      ok: true,
-      message: `Order placed successfully: ${successParts.join(', ')}`,
+      ok: failCount === 0,
+      message: `${header}\n\nClient-wise status:\n${normalized.map((x) => x.line).join('\n')}`,
     };
   }
 
@@ -354,13 +363,13 @@ export default function TradeForm() {
         multiplier,
       };
 
-      const resp = await api.post('/place_order', payload);
-      const summary = extractBrokerResultSummary(resp?.data);
+     const resp = await api.post('/place_order', payload);
+     const summary = extractBrokerResultSummary(resp?.data);
 
-      setToast({
-        variant: summary.ok ? 'success' : 'danger',
-        text: summary.message,
-      });
+    setToast({
+    variant: summary.ok ? 'success' : 'danger',
+    text: summary.message,
+   });
     } catch (err) {
       const backendMsg =
         err.response?.data?.detail ||
@@ -769,12 +778,16 @@ export default function TradeForm() {
           </Col>
         </Row>
 
-        {toast && (
-          <Alert variant={toast.variant} onClose={() => setToast(null)} dismissible className="mt-3">
-            {toast.text}
-          </Alert>
-        )}
-      </Form>
+       {toast && (
+         <Alert
+       variant={toast.variant}
+           onClose={() => setToast(null)}
+           dismissible
+    className="mt-3 toast-preline"
+  >
+    {toast.text}
+  </Alert>
+)}
 
       <style jsx>{`
         .cardPad { padding: 1rem 2.5rem 2.75rem; }
@@ -810,6 +823,10 @@ export default function TradeForm() {
         .btn-nudge { margin-left: 3rem; padding-bottom: 0.25rem; }
 
         .text-muted.small { font-size: 0.85rem; }
+
+        .toast-preline {
+  white-space: pre-line;
+}
       `}</style>
     </Card>
   );
