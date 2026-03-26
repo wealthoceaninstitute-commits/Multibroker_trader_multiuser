@@ -1,19 +1,8 @@
-/**
- * SettingsTab.jsx
- * Drop-in Settings tab for Multibroker Trader
- *
- * Usage — add to your tab list:
- *   <button onClick={() => setTab('settings')}>Settings</button>
- *   {tab === 'settings' && <SettingsTab userId={userId} apiBase={API_BASE} />}
- *
- * Props:
- *   userId  — logged-in owner_userid string
- *   apiBase — e.g. "https://your-backend.railway.app"
- */
+"use client";
 
 import { useState, useEffect } from "react";
 
-// ── Inline styles matching the existing app (teal links, white cards, grey bg) ──
+// ── Inline styles matching the existing app ──
 const S = {
   page: {
     background: "#f3f4f6",
@@ -44,11 +33,6 @@ const S = {
     gridTemplateColumns: "1fr 1fr",
     gap: "16px 24px",
   },
-  gridFull: {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: "16px 24px",
-  },
   fieldWrap: {
     display: "flex",
     flexDirection: "column",
@@ -66,30 +50,15 @@ const S = {
     fontSize: 13,
     color: "#111827",
     outline: "none",
+    background: "#fff",
     transition: "border-color 0.15s",
-    background: "#fff",
-  },
-  select: {
-    border: "1px solid #d1d5db",
-    borderRadius: 5,
-    padding: "7px 10px",
-    fontSize: 13,
-    color: "#111827",
-    outline: "none",
-    background: "#fff",
-    cursor: "pointer",
-    appearance: "none",
-    backgroundImage:
-      'url(\'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236b7280" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>\')',
-    backgroundRepeat: "no-repeat",
-    backgroundPosition: "right 10px center",
-    paddingRight: 30,
   },
   btnRow: {
     display: "flex",
     gap: 10,
     marginTop: 6,
     alignItems: "center",
+    flexWrap: "wrap",
   },
   btnSave: {
     background: "#16a34a",
@@ -128,12 +97,6 @@ const S = {
     color: "#9ca3af",
     marginTop: 3,
   },
-  sectionDivider: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    margin: "4px 0 16px",
-  },
   chipRow: {
     display: "flex",
     gap: 8,
@@ -152,16 +115,15 @@ const S = {
   }),
 };
 
-// ── Chip selector for trade defaults ──
 function ChipSelect({ value, options, onChange }) {
   return (
     <div style={S.chipRow}>
       {options.map((opt) => (
         <button
           key={opt.value}
+          type="button"
           style={S.chip(value === opt.value)}
           onClick={() => onChange(opt.value)}
-          type="button"
         >
           {opt.label}
         </button>
@@ -170,11 +132,9 @@ function ChipSelect({ value, options, onChange }) {
   );
 }
 
-// ── Main component ──
-export default function SettingsTab({ userId, apiBase = "" }) {
-  const BASE = apiBase.replace(/\/$/, "");
+export default function SettingsTab({ userId = "", apiBase = "" }) {
+  const BASE = (apiBase || "").replace(/\/$/, "");
 
-  // Profile state
   const [profile, setProfile] = useState({
     name: "",
     phone: "",
@@ -182,7 +142,6 @@ export default function SettingsTab({ userId, apiBase = "" }) {
     telegram_chat_id: "",
   });
 
-  // Trade defaults state
   const [defaults, setDefaults] = useState({
     action: "BUY",
     product_type: "DELIVERY",
@@ -190,47 +149,82 @@ export default function SettingsTab({ userId, apiBase = "" }) {
     order_duration: "DAY",
   });
 
-  const [loading, setLoading]       = useState(true);
-  const [saving, setSaving]         = useState(false);
-  const [toast, setToast]           = useState(null); // { ok, msg }
-  const [testingTg, setTestingTg]   = useState(false);
-  const [tgToast, setTgToast]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [testingTg, setTestingTg] = useState(false);
+  const [tgToast, setTgToast] = useState(null);
 
-  // ── Auth header helper ──
   const authHeaders = () => {
-    const token = localStorage.getItem("access_token") || sessionStorage.getItem("access_token") || "";
+    let token = "";
+    try {
+      token =
+        localStorage.getItem("mb_auth_token_v1") ||
+        sessionStorage.getItem("mb_auth_token_v1") ||
+        localStorage.getItem("access_token") ||
+        sessionStorage.getItem("access_token") ||
+        "";
+    } catch {
+      token = "";
+    }
+
     return {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : { "x-user-id": userId }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(userId ? { "x-user-id": userId } : {}),
     };
   };
 
-  // ── Load settings on mount ──
-  useEffect(() => {
-    if (!userId) return;
-    setLoading(true);
-    fetch(`${BASE}/user_settings?userid=${encodeURIComponent(userId)}`, {
-      headers: authHeaders(),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.success) {
-          setProfile((p) => ({ ...p, ...data.profile }));
-          setDefaults((d) => ({ ...d, ...data.trade_defaults }));
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [userId]);
-
-  // ── Show toast briefly ──
   const showToast = (ok, msg, setter = setToast) => {
     setter({ ok, msg });
     setTimeout(() => setter(null), 3500);
   };
 
-  // ── Save settings ──
+  useEffect(() => {
+    if (!userId || !BASE) {
+      setLoading(false);
+      return;
+    }
+
+    let alive = true;
+    setLoading(true);
+
+    fetch(`${BASE}/user_settings?userid=${encodeURIComponent(userId)}`, {
+      headers: authHeaders(),
+    })
+      .then(async (r) => {
+        let data = {};
+        try {
+          data = await r.json();
+        } catch {
+          data = {};
+        }
+        return { ok: r.ok, data };
+      })
+      .then(({ ok, data }) => {
+        if (!alive) return;
+
+        if (ok && data?.success) {
+          setProfile((p) => ({ ...p, ...(data.profile || {}) }));
+          setDefaults((d) => ({ ...d, ...(data.trade_defaults || {}) }));
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [userId, BASE]);
+
   const handleSave = async () => {
+    if (!userId || !BASE) {
+      showToast(false, "Missing userId or API base");
+      return;
+    }
+
     setSaving(true);
     try {
       const resp = await fetch(`${BASE}/user_settings`, {
@@ -242,24 +236,38 @@ export default function SettingsTab({ userId, apiBase = "" }) {
           trade_defaults: defaults,
         }),
       });
-      const data = await resp.json();
-      showToast(data.success, data.success ? "Settings saved" : data.message || "Save failed");
-    } catch (e) {
+
+      let data = {};
+      try {
+        data = await resp.json();
+      } catch {
+        data = {};
+      }
+
+      showToast(
+        !!data?.success,
+        data?.success ? "Settings saved" : data?.message || "Save failed"
+      );
+    } catch {
       showToast(false, "Network error");
     } finally {
       setSaving(false);
     }
   };
 
-  // ── Test Telegram ──
   const handleTestTelegram = async () => {
     if (!profile.telegram_chat_id) {
       showToast(false, "Enter your Telegram Chat ID first", setTgToast);
       return;
     }
+
+    if (!userId || !BASE) {
+      showToast(false, "Missing userId or API base", setTgToast);
+      return;
+    }
+
     setTestingTg(true);
     try {
-      // Save chat_id first so the backend can find it
       await fetch(`${BASE}/user_settings`, {
         method: "POST",
         headers: authHeaders(),
@@ -268,13 +276,25 @@ export default function SettingsTab({ userId, apiBase = "" }) {
           profile: { telegram_chat_id: profile.telegram_chat_id },
         }),
       });
+
       const resp = await fetch(`${BASE}/test_telegram`, {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({ userid: userId }),
       });
-      const data = await resp.json();
-      showToast(data.success, data.success ? "Test message sent! Check Telegram" : "Failed — check Chat ID", setTgToast);
+
+      let data = {};
+      try {
+        data = await resp.json();
+      } catch {
+        data = {};
+      }
+
+      showToast(
+        !!data?.success,
+        data?.success ? "Test message sent! Check Telegram" : "Failed - check Chat ID",
+        setTgToast
+      );
     } catch {
       showToast(false, "Network error", setTgToast);
     } finally {
@@ -285,17 +305,32 @@ export default function SettingsTab({ userId, apiBase = "" }) {
   if (loading) {
     return (
       <div style={{ padding: 40, color: "#9ca3af", fontSize: 13 }}>
-        Loading settings…
+        Loading settings...
+      </div>
+    );
+  }
+
+  if (!userId) {
+    return (
+      <div style={{ padding: 24, color: "#dc2626", fontSize: 13 }}>
+        Missing userId.
+      </div>
+    );
+  }
+
+  if (!BASE) {
+    return (
+      <div style={{ padding: 24, color: "#dc2626", fontSize: 13 }}>
+        Missing API base URL.
       </div>
     );
   }
 
   return (
     <div style={{ padding: "20px 0" }}>
-
-      {/* ── Profile Card ── */}
       <div style={S.card}>
         <div style={S.cardTitle}>Profile</div>
+
         <div style={S.grid}>
           <div style={S.fieldWrap}>
             <label style={S.label}>Full Name</label>
@@ -306,6 +341,7 @@ export default function SettingsTab({ userId, apiBase = "" }) {
               onChange={(e) => setProfile((p) => ({ ...p, name: e.target.value }))}
             />
           </div>
+
           <div style={S.fieldWrap}>
             <label style={S.label}>Phone Number</label>
             <input
@@ -316,6 +352,7 @@ export default function SettingsTab({ userId, apiBase = "" }) {
               maxLength={15}
             />
           </div>
+
           <div style={S.fieldWrap}>
             <label style={S.label}>Email</label>
             <input
@@ -326,8 +363,10 @@ export default function SettingsTab({ userId, apiBase = "" }) {
               onChange={(e) => setProfile((p) => ({ ...p, email: e.target.value }))}
             />
           </div>
+
           <div style={S.fieldWrap}>
             <label style={S.label}>Telegram Chat ID</label>
+
             <div style={{ display: "flex", gap: 8 }}>
               <input
                 style={{ ...S.input, flex: 1 }}
@@ -338,17 +377,19 @@ export default function SettingsTab({ userId, apiBase = "" }) {
                 }
               />
               <button
+                type="button"
                 style={{ ...S.btnTest, whiteSpace: "nowrap" }}
                 onClick={handleTestTelegram}
                 disabled={testingTg}
-                type="button"
               >
-                {testingTg ? "Sending…" : "Test"}
+                {testingTg ? "Sending..." : "Test"}
               </button>
             </div>
+
             <span style={S.hint}>
               Message @userinfobot on Telegram to get your Chat ID
             </span>
+
             {tgToast && (
               <span style={{ ...S.toast(tgToast.ok), marginTop: 6 }}>
                 {tgToast.ok ? "✓" : "✗"} {tgToast.msg}
@@ -358,29 +399,26 @@ export default function SettingsTab({ userId, apiBase = "" }) {
         </div>
       </div>
 
-      {/* ── Trade Defaults Card ── */}
       <div style={S.card}>
         <div style={S.cardTitle}>Trade Defaults</div>
+
         <p style={{ fontSize: 12, color: "#6b7280", marginTop: -10, marginBottom: 20 }}>
           These values will be pre-selected every time you open the Trade tab.
         </p>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px 32px" }}>
-
-          {/* Action */}
           <div style={S.fieldWrap}>
             <label style={S.label}>Default Action</label>
             <ChipSelect
               value={defaults.action}
               onChange={(v) => setDefaults((d) => ({ ...d, action: v }))}
               options={[
-                { label: "BUY",  value: "BUY"  },
+                { label: "BUY", value: "BUY" },
                 { label: "SELL", value: "SELL" },
               ]}
             />
           </div>
 
-          {/* Order Duration */}
           <div style={S.fieldWrap}>
             <label style={S.label}>Default Duration</label>
             <ChipSelect
@@ -395,57 +433,52 @@ export default function SettingsTab({ userId, apiBase = "" }) {
             />
           </div>
 
-          {/* Order Type */}
           <div style={S.fieldWrap}>
             <label style={S.label}>Default Order Type</label>
             <ChipSelect
               value={defaults.order_type}
               onChange={(v) => setDefaults((d) => ({ ...d, order_type: v }))}
               options={[
-                { label: "MARKET",   value: "MARKET"   },
-                { label: "LIMIT",    value: "LIMIT"    },
+                { label: "MARKET", value: "MARKET" },
+                { label: "LIMIT", value: "LIMIT" },
                 { label: "STOPLOSS", value: "STOPLOSS" },
-                { label: "SL-M",     value: "SL-M"     },
+                { label: "SL-M", value: "SL-M" },
               ]}
             />
           </div>
 
-          {/* Product Type */}
           <div style={S.fieldWrap}>
             <label style={S.label}>Default Product Type</label>
             <ChipSelect
               value={defaults.product_type}
               onChange={(v) => setDefaults((d) => ({ ...d, product_type: v }))}
               options={[
-                { label: "INTRADAY", value: "VALUEPLUS" },
                 { label: "DELIVERY", value: "DELIVERY" },
-                { label: "NORMAL",   value: "NORMAL"   },
-                { label: "BTST",     value: "BTST"     },
-                { label: "MTF",      value: "MTF"      },
+                { label: "NORMAL", value: "NORMAL" },
+                { label: "BTST", value: "BTST" },
+                { label: "MTF", value: "MTF" },
               ]}
             />
           </div>
-
         </div>
       </div>
 
-      {/* ── Save Row ── */}
       <div style={S.btnRow}>
         <button
+          type="button"
           style={{ ...S.btnSave, opacity: saving ? 0.7 : 1 }}
           onClick={handleSave}
           disabled={saving}
-          type="button"
         >
-          {saving ? "Saving…" : "Save Settings"}
+          {saving ? "Saving..." : "Save Settings"}
         </button>
+
         {toast && (
           <span style={S.toast(toast.ok)}>
             {toast.ok ? "✓" : "✗"} {toast.msg}
           </span>
         )}
       </div>
-
     </div>
   );
 }
