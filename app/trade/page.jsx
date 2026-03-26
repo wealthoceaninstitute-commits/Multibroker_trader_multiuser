@@ -14,6 +14,7 @@ const Holdings    = dynamic(() => import('../../components/Holdings'), { ssr: fa
 const Summary     = dynamic(() => import('../../components/Summary'), { ssr: false });
 const Clients     = dynamic(() => import('../../components/Clients'), { ssr: false });
 const CopyTrading = dynamic(() => import('../../components/CopyTrading'), { ssr: false });
+const Settings    = dynamic(() => import('../../components/CopyTrading'), { ssr: false });
 
 export default function Page() {
   const [key, setKey] = useState('trade');
