@@ -417,6 +417,7 @@ export default function SettingsTab({ userId, apiBase = "" }) {
               value={defaults.product_type}
               onChange={(v) => setDefaults((d) => ({ ...d, product_type: v }))}
               options={[
+                { label: "INTRADAY", value: "VALUEPLUS" },
                 { label: "DELIVERY", value: "DELIVERY" },
                 { label: "NORMAL",   value: "NORMAL"   },
                 { label: "BTST",     value: "BTST"     },
