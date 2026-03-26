@@ -43,6 +43,7 @@ export default function Page() {
         <Tab eventKey="summary" title="Summary"><Summary/></Tab>
         <Tab eventKey="clients" title="Clients"><Clients/></Tab>
         <Tab eventKey="copytrading" title="Copy Trading"><CopyTrading/></Tab>
+        <Tab eventKey="settings" title="Settings"><Settings/></Tab>
       </Tabs>
     </Container>
   );
