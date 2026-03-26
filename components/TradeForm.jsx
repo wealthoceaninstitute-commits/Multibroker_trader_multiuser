@@ -15,49 +15,63 @@ const toIntOr = (v, fallback = 1) => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
-export default function TradeForm() {
-  // core state
-  const [action, setAction] = useState('buy');
-  const [productType, setProductType] = useState('DELIVERY');  // ✅ default changed from VALUEPLUS -> DELIVERY
-  const [orderType, setOrderType] = useState('LIMIT');         // LIMIT | MARKET | STOPLOSS | SL MARKET
-  const [qtySelection, setQtySelection] = useState('manual');  // manual | auto
-  const [groupAcc, setGroupAcc] = useState(false);
-  const [diffQty, setDiffQty] = useState(false);
-  const [multiplier, setMultiplier] = useState(false);
+const TRADE_FORM_STORAGE_KEY = 'woi-trade-form-v2';
 
-  const [qty, setQty] = useState('1');
-  const [exchange, setExchange] = useState('nse');
-  const [symbol, setSymbol] = useState(null);
-  const [price, setPrice] = useState(0);
-  const [trigPrice, setTrigPrice] = useState(0);
-  const [disclosedQty, setDisclosedQty] = useState(0);
+const detectUserId = () => {
+  if (typeof window === 'undefined') return '';
+  const a = window.localStorage.getItem('mb_logged_in_userid_v1') || '';
+  const b = window.localStorage.getItem('mb_user') || '';
+  const c = window.localStorage.getItem('mb_logged_in_userid') || '';
+  return (a || b || c || '').replace(/(^"|"$)/g, '');
+};
+
+const loadSavedForm = () => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(TRADE_FORM_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+export default function TradeForm() {
+  const saved = loadSavedForm();
+
+  // core state
+  const [action, setAction] = useState(saved?.action ?? 'buy');
+  const [productType, setProductType] = useState(saved?.productType ?? 'DELIVERY'); // default changed from VALUEPLUS -> DELIVERY
+  const [orderType, setOrderType] = useState(saved?.orderType ?? 'LIMIT'); // LIMIT | MARKET | STOPLOSS | SL MARKET
+  const [qtySelection, setQtySelection] = useState(saved?.qtySelection ?? 'manual'); // manual | auto
+  const [groupAcc, setGroupAcc] = useState(saved?.groupAcc ?? false);
+  const [diffQty, setDiffQty] = useState(saved?.diffQty ?? false);
+  const [multiplier, setMultiplier] = useState(saved?.multiplier ?? false);
+
+  const [qty, setQty] = useState(saved?.qty ?? '1');
+  const [exchange, setExchange] = useState(saved?.exchange ?? 'nse');
+  const [symbol, setSymbol] = useState(saved?.symbol ?? null);
+  const [price, setPrice] = useState(saved?.price ?? 0);
+  const [trigPrice, setTrigPrice] = useState(saved?.trigPrice ?? 0);
+  const [disclosedQty, setDisclosedQty] = useState(saved?.disclosedQty ?? 0);
 
   // Order Duration: only DAY/IOC radios; "AMO Order" checkbox
-  const [timeForce, setTimeForce] = useState('DAY'); // 'DAY' | 'IOC'
-  const [amo, setAmo] = useState(false);
+  const [timeForce, setTimeForce] = useState(saved?.timeForce ?? 'DAY'); // 'DAY' | 'IOC'
+  const [amo, setAmo] = useState(saved?.amo ?? false);
 
   const [clients, setClients] = useState([]);
-  const [selectedClients, setSelectedClients] = useState([]);
+  const [selectedClients, setSelectedClients] = useState(saved?.selectedClients ?? []);
 
   const [groups, setGroups] = useState([]);
-  const [selectedGroups, setSelectedGroups] = useState([]);
+  const [selectedGroups, setSelectedGroups] = useState(saved?.selectedGroups ?? []);
 
-  const [perClientQty, setPerClientQty] = useState({});
-  const [perGroupQty, setPerGroupQty] = useState({});
+  const [perClientQty, setPerClientQty] = useState(saved?.perClientQty ?? {});
+  const [perGroupQty, setPerGroupQty] = useState(saved?.perGroupQty ?? {});
 
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
 
   // ---- load user-scoped Clients & Groups ----
   useEffect(() => {
-    const detectUserId = () => {
-      if (typeof window === 'undefined') return '';
-      const a = window.localStorage.getItem('mb_logged_in_userid_v1') || '';
-      const b = window.localStorage.getItem('mb_user') || '';
-      const c = window.localStorage.getItem('mb_logged_in_userid') || '';
-      return (a || b || c || '').replace(/(^"|"$)/g, '');
-    };
-
     const userid = detectUserId();
     const headers = userid ? { 'x-user-id': userid } : {};
     const params = userid ? { userid } : {};
@@ -84,16 +98,16 @@ export default function TradeForm() {
           const membersRaw = g?.members ?? g?.clients ?? g?.client_ids ?? g?.clientIds ?? g?.accounts ?? [];
           const members = Array.isArray(membersRaw)
             ? membersRaw
-            : (typeof membersRaw === 'string' ? membersRaw.split(',').map(s => s.trim()).filter(Boolean) : []);
-          const multiplier = Number(g?.multiplier ?? g?.groupMultiplier ?? g?.mult ?? 1) || 1;
+            : (typeof membersRaw === 'string' ? membersRaw.split(',').map((s) => s.trim()).filter(Boolean) : []);
+          const groupMultiplier = Number(g?.multiplier ?? g?.groupMultiplier ?? g?.mult ?? 1) || 1;
           return {
             ...g,
             group_name: String(group_name || '').trim(),
             no_of_clients: Number(g?.no_of_clients ?? members.length ?? 0) || 0,
-            multiplier,
+            multiplier: groupMultiplier,
             members,
           };
-        }).filter(g => g.group_name);
+        }).filter((g) => g.group_name);
 
         setGroups(normalized);
       } catch {
@@ -105,12 +119,94 @@ export default function TradeForm() {
     loadGroups();
   }, []);
 
+  // persist form state across tab switches / remounts
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const formState = {
+      action,
+      productType,
+      orderType,
+      qtySelection,
+      groupAcc,
+      diffQty,
+      multiplier,
+      qty,
+      exchange,
+      symbol,
+      price,
+      trigPrice,
+      disclosedQty,
+      timeForce,
+      amo,
+      selectedClients,
+      selectedGroups,
+      perClientQty,
+      perGroupQty,
+    };
+
+    try {
+      window.localStorage.setItem(
+        TRADE_FORM_STORAGE_KEY,
+        JSON.stringify(formState)
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [
+    action,
+    productType,
+    orderType,
+    qtySelection,
+    groupAcc,
+    diffQty,
+    multiplier,
+    qty,
+    exchange,
+    symbol,
+    price,
+    trigPrice,
+    disclosedQty,
+    timeForce,
+    amo,
+    selectedClients,
+    selectedGroups,
+    perClientQty,
+    perGroupQty,
+  ]);
+
+  // clean invalid saved selections after clients/groups load
+  useEffect(() => {
+    if (!clients.length) return;
+    setSelectedClients((prev) =>
+      (prev || []).filter((cid) => clients.some((c) => c.client_id === cid))
+    );
+    setPerClientQty((prev) => {
+      const validIds = new Set(clients.map((c) => c.client_id));
+      return Object.fromEntries(
+        Object.entries(prev || {}).filter(([cid]) => validIds.has(cid))
+      );
+    });
+  }, [clients]);
+
+  useEffect(() => {
+    if (!groups.length) return;
+    setSelectedGroups((prev) =>
+      (prev || []).filter((gn) => groups.some((g) => g.group_name === gn))
+    );
+    setPerGroupQty((prev) => {
+      const validNames = new Set(groups.map((g) => g.group_name));
+      return Object.fromEntries(
+        Object.entries(prev || {}).filter(([gn]) => validNames.has(gn))
+      );
+    });
+  }, [groups]);
 
   const loadSymbolOptions = async (inputValue) => {
     if (!inputValue || inputValue.length < 1) return [];
     const res = await api.get('/search_symbols', { params: { q: inputValue, exchange } });
     const results = res.data?.results || [];
-    return results.map(r => ({
+    return results.map((r) => ({
       value: r.id ?? r.value ?? r.symbol ?? r.text,
       label: r.text ?? r.label ?? String(r.id),
     }));
@@ -118,6 +214,11 @@ export default function TradeForm() {
 
   // derived
   const isStopOrder = orderType === 'STOPLOSS' || orderType === 'SL MARKET';
+
+  const selectedClientMap = useMemo(
+    () => new Map((clients || []).map((c) => [c.client_id, c])),
+    [clients]
+  );
 
   const submit = async (e) => {
     e.preventDefault();
@@ -133,7 +234,7 @@ export default function TradeForm() {
       return;
     }
 
-    // ✅ NEW: symbol validation to avoid backend crash / network error
+    // symbol validation to avoid backend crash / network error
     if (!symbol || !symbol.value) {
       setToast({ variant: 'warning', text: 'Please select a symbol before placing the order.' });
       return;
@@ -141,10 +242,10 @@ export default function TradeForm() {
 
     const safeSingleQty = qtySelection === 'auto' ? 0 : toIntOr(qty, 1);
     const safePerClientQty = (!groupAcc && diffQty)
-      ? Object.fromEntries(selectedClients.map(cid => [cid, toIntOr(perClientQty[cid], 1)]))
+      ? Object.fromEntries(selectedClients.map((cid) => [cid, toIntOr(perClientQty[cid], 1)]))
       : {};
     const safePerGroupQty = (groupAcc && diffQty)
-      ? Object.fromEntries(selectedGroups.map(gn => [gn, toIntOr(perGroupQty[gn], 1)]))
+      ? Object.fromEntries(selectedGroups.map((gn) => [gn, toIntOr(perGroupQty[gn], 1)]))
       : {};
 
     setBusy(true);
@@ -173,7 +274,6 @@ export default function TradeForm() {
       const resp = await api.post('/place_order', payload);
       setToast({ variant: 'success', text: 'Order placed. Response: ' + JSON.stringify(resp.data) });
     } catch (err) {
-      // slightly smarter backend error extraction (FastAPI HTTPException uses "detail")
       const backendMsg =
         err.response?.data?.detail ||
         err.response?.data?.message ||
@@ -185,8 +285,18 @@ export default function TradeForm() {
     }
   };
 
+  const resetForm = () => {
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem(TRADE_FORM_STORAGE_KEY);
+      }
+    } catch {
+      // ignore
+    }
+    window.location.reload();
+  };
+
   return (
-    // NOTE: blueTone class added here for bluish skin/glow
     <Card className="shadow-sm cardPad blueTone">
       <Form onSubmit={submit}>
         {/* Section: Action */}
@@ -194,10 +304,24 @@ export default function TradeForm() {
           <Row className="g-2 align-items-center">
             <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
               <Form.Label className="mb-0 fw-semibold">Action</Form.Label>
-              <Form.Check inline type="radio" name="action" id="buy"  label="BUY"
-                checked={action==='buy'}  onChange={()=>setAction('buy')} />
-              <Form.Check inline type="radio" name="action" id="sell" label="SELL"
-                checked={action==='sell'} onChange={()=>setAction('sell')} />
+              <Form.Check
+                inline
+                type="radio"
+                name="action"
+                id="buy"
+                label="BUY"
+                checked={action === 'buy'}
+                onChange={() => setAction('buy')}
+              />
+              <Form.Check
+                inline
+                type="radio"
+                name="action"
+                id="sell"
+                label="SELL"
+                checked={action === 'sell'}
+                onChange={() => setAction('sell')}
+              />
             </Col>
           </Row>
         </div>
@@ -207,10 +331,16 @@ export default function TradeForm() {
           <Row className="g-2 align-items-center">
             <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
               <Form.Label className="mb-0 fw-semibold">Product</Form.Label>
-              {['VALUEPLUS','DELIVERY','NORMAL','SELLFROMDP','BTST','MTF'].map(pt => (
-                <Form.Check key={pt} inline type="radio" name="productType"
-                  label={pt==='VALUEPLUS' ? 'INTRADAY' : pt}
-                  checked={productType===pt} onChange={()=>setProductType(pt)} />
+              {['VALUEPLUS', 'DELIVERY', 'NORMAL', 'SELLFROMDP', 'BTST', 'MTF'].map((pt) => (
+                <Form.Check
+                  key={pt}
+                  inline
+                  type="radio"
+                  name="productType"
+                  label={pt === 'VALUEPLUS' ? 'INTRADAY' : pt}
+                  checked={productType === pt}
+                  onChange={() => setProductType(pt)}
+                />
               ))}
             </Col>
           </Row>
@@ -221,10 +351,16 @@ export default function TradeForm() {
           <Row className="g-2 align-items-center">
             <Col xs="auto" className="d-flex align-items-center flex-wrap gap-3">
               <Form.Label className="mb-0 fw-semibold">Order Type</Form.Label>
-              {['LIMIT','MARKET','STOPLOSS','SL MARKET'].map(ot => (
-                <Form.Check key={ot} inline type="radio" name="orderType"
-                  label={ot.replace('SL MARKET','SL_MARKET')}
-                  checked={orderType===ot} onChange={()=>setOrderType(ot)} />
+              {['LIMIT', 'MARKET', 'STOPLOSS', 'SL MARKET'].map((ot) => (
+                <Form.Check
+                  key={ot}
+                  inline
+                  type="radio"
+                  name="orderType"
+                  label={ot.replace('SL MARKET', 'SL_MARKET')}
+                  checked={orderType === ot}
+                  onChange={() => setOrderType(ot)}
+                />
               ))}
             </Col>
           </Row>
@@ -241,16 +377,17 @@ export default function TradeForm() {
                     multiple
                     size={8}
                     value={selectedClients}
-                    onChange={e=>setSelectedClients(Array.from(e.target.selectedOptions).map(o=>o.value))}
+                    onChange={(e) =>
+                      setSelectedClients(Array.from(e.target.selectedOptions).map((o) => o.value))
+                    }
                   >
-                    {(clients || []).map(c => (
+                    {(clients || []).map((c) => (
                       <option key={c.client_id} value={c.client_id}>
                         {c.name} : {c.client_id}
                       </option>
                     ))}
                   </Form.Select>
 
-                  {/* Per-Client Quantity inputs when Diff. Qty. is enabled */}
                   {diffQty && (
                     <div className="mt-2">
                       <Form.Label className="fw-semibold small text-primary">
@@ -259,8 +396,8 @@ export default function TradeForm() {
                       {selectedClients.length === 0 ? (
                         <div className="text-muted small">Select clients to assign quantities.</div>
                       ) : (
-                        selectedClients.map(cid => {
-                          const client = clients.find(c => c.client_id === cid);
+                        selectedClients.map((cid) => {
+                          const client = selectedClientMap.get(cid);
                           return (
                             <Row key={cid} className="align-items-center mb-1">
                               <Col xs={6}>
@@ -271,8 +408,8 @@ export default function TradeForm() {
                                   type="number"
                                   min="1"
                                   value={perClientQty[cid] || ''}
-                                  onChange={e =>
-                                    setPerClientQty(prev => ({ ...prev, [cid]: e.target.value }))
+                                  onChange={(e) =>
+                                    setPerClientQty((prev) => ({ ...prev, [cid]: e.target.value }))
                                   }
                                   placeholder="Qty"
                                 />
@@ -288,26 +425,27 @@ export default function TradeForm() {
                 <>
                   <Form.Label className="label-tight">Select Groups</Form.Label>
                   <div className="border rounded p-2">
-                    {groups.length===0 ? (
+                    {groups.length === 0 ? (
                       <div className="text-muted">No groups found.</div>
                     ) : (
-                      groups.map(g => (
+                      groups.map((g) => (
                         <Form.Check
                           key={g.group_name}
                           type="checkbox"
                           id={`group_${g.group_name}`}
                           label={`${g.group_name} (${g.no_of_clients} clients, x${g.multiplier})`}
                           checked={selectedGroups.includes(g.group_name)}
-                          onChange={e=>{
+                          onChange={(e) => {
                             const chk = e.target.checked;
-                            setSelectedGroups(prev => chk ? [...prev, g.group_name] : prev.filter(x=>x!==g.group_name));
+                            setSelectedGroups((prev) =>
+                              chk ? [...prev, g.group_name] : prev.filter((x) => x !== g.group_name)
+                            );
                           }}
                         />
                       ))
                     )}
                   </div>
 
-                  {/* Per-Group Quantity inputs when Diff. Qty. is enabled */}
                   {diffQty && (
                     <div className="mt-2">
                       <Form.Label className="fw-semibold small text-primary">
@@ -316,7 +454,7 @@ export default function TradeForm() {
                       {selectedGroups.length === 0 ? (
                         <div className="text-muted small">Select groups to assign quantities.</div>
                       ) : (
-                        selectedGroups.map(gn => (
+                        selectedGroups.map((gn) => (
                           <Row key={gn} className="align-items-center mb-1">
                             <Col xs={6}>
                               <div className="text-muted small">{gn}</div>
@@ -326,8 +464,8 @@ export default function TradeForm() {
                                 type="number"
                                 min="1"
                                 value={perGroupQty[gn] || ''}
-                                onChange={e =>
-                                  setPerGroupQty(prev => ({ ...prev, [gn]: e.target.value }))
+                                onChange={(e) =>
+                                  setPerGroupQty((prev) => ({ ...prev, [gn]: e.target.value }))
                                 }
                                 placeholder="Qty"
                               />
@@ -353,10 +491,10 @@ export default function TradeForm() {
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                disabled={qtySelection==='auto' || diffQty}  // disable single qty when using Diff. Qty.
+                disabled={qtySelection === 'auto' || diffQty}
                 value={qty}
-                onChange={e=>setQty(onlyDigits(e.target.value))}
-                onBlur={()=>setQty(String(Math.max(1, parseInt(qty || '1', 10) || 1)))}
+                onChange={(e) => setQty(onlyDigits(e.target.value))}
+                onBlur={() => setQty(String(Math.max(1, parseInt(qty || '1', 10) || 1)))}
               />
               {diffQty && (
                 <div className="form-text">Disabled because “Diff. Qty.” is ON.</div>
@@ -366,20 +504,57 @@ export default function TradeForm() {
             <Col md={7}>
               <div className="d-flex align-items-center flex-wrap gap-3 mb-1">
                 <Form.Label className="mb-0 fw-semibold">Entity</Form.Label>
-                <Form.Check inline type="checkbox" id="groupAcc" label="Group Acc"
-                  checked={groupAcc} onChange={e=>{ setGroupAcc(e.target.checked); setSelectedGroups([]); }} />
-                <Form.Check inline type="checkbox" id="diffQty" label="Diff. Qty."
-                  checked={diffQty} onChange={e=>setDiffQty(e.target.checked)} />
-                <Form.Check inline type="checkbox" id="multiplier" label="Multiplier"
-                  checked={multiplier} onChange={e=>setMultiplier(e.target.checked)} />
+                <Form.Check
+                  inline
+                  type="checkbox"
+                  id="groupAcc"
+                  label="Group Acc"
+                  checked={groupAcc}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setGroupAcc(checked);
+                    setSelectedGroups([]);
+                    setSelectedClients([]);
+                    setPerGroupQty({});
+                    setPerClientQty({});
+                  }}
+                />
+                <Form.Check
+                  inline
+                  type="checkbox"
+                  id="diffQty"
+                  label="Diff. Qty."
+                  checked={diffQty}
+                  onChange={(e) => setDiffQty(e.target.checked)}
+                />
+                <Form.Check
+                  inline
+                  type="checkbox"
+                  id="multiplier"
+                  label="Multiplier"
+                  checked={multiplier}
+                  onChange={(e) => setMultiplier(e.target.checked)}
+                />
               </div>
 
               <div className="d-flex align-items-center flex-wrap gap-3">
                 <Form.Label className="mb-0 fw-semibold">Qty Mode</Form.Label>
-                <Form.Check inline type="radio" name="qtySel" label="Manual"
-                  checked={qtySelection==='manual'} onChange={()=>setQtySelection('manual')} />
-                <Form.Check inline type="radio" name="qtySel" label="Auto Calculate"
-                  checked={qtySelection==='auto'} onChange={()=>setQtySelection('auto')} />
+                <Form.Check
+                  inline
+                  type="radio"
+                  name="qtySel"
+                  label="Manual"
+                  checked={qtySelection === 'manual'}
+                  onChange={() => setQtySelection('manual')}
+                />
+                <Form.Check
+                  inline
+                  type="radio"
+                  name="qtySel"
+                  label="Auto Calculate"
+                  checked={qtySelection === 'auto'}
+                  onChange={() => setQtySelection('auto')}
+                />
               </div>
             </Col>
           </Row>
@@ -388,10 +563,15 @@ export default function TradeForm() {
           <Row className="g-2 mb-2 align-items-end">
             <Col md={5}>
               <Form.Label className="label-tight">Exchange</Form.Label>
-              <Form.Select value={exchange} onChange={e=>setExchange(e.target.value)}>
-                {['nse','bse','nsefo','nsecd','ncdex','mcx','bsefo','bsecd'].map(x =>
-                  <option key={x} value={x}>{x.toUpperCase()}</option>
-                )}
+              <Form.Select
+                value={exchange}
+                onChange={(e) => setExchange(e.target.value)}
+              >
+                {['nse', 'bse', 'nsefo', 'nsecd', 'ncdex', 'mcx', 'bsefo', 'bsecd'].map((x) => (
+                  <option key={x} value={x}>
+                    {x.toUpperCase()}
+                  </option>
+                ))}
               </Form.Select>
             </Col>
 
@@ -416,7 +596,7 @@ export default function TradeForm() {
                 type="number"
                 step="0.01"
                 value={price}
-                onChange={e=>setPrice(e.target.value)}
+                onChange={(e) => setPrice(e.target.value)}
               />
             </Col>
 
@@ -428,7 +608,7 @@ export default function TradeForm() {
                     type="number"
                     step="0.01"
                     value={trigPrice}
-                    onChange={e=>setTrigPrice(e.target.value)}
+                    onChange={(e) => setTrigPrice(e.target.value)}
                     disabled={!isStopOrder}
                   />
                 </Col>
@@ -437,7 +617,7 @@ export default function TradeForm() {
                   <Form.Control
                     type="number"
                     value={disclosedQty}
-                    onChange={e=>setDisclosedQty(e.target.value)}
+                    onChange={(e) => setDisclosedQty(e.target.value)}
                   />
                 </Col>
               </Row>
@@ -450,17 +630,30 @@ export default function TradeForm() {
           <Row className="g-2 align-items-center">
             <Col md="auto" className="d-flex align-items-center flex-wrap gap-3">
               <Form.Label className="mb-0">Order Duration</Form.Label>
-              {['DAY','IOC'].map(tf => (
-                <Form.Check key={tf} inline type="radio" name="timeForce"
-                  label={tf} checked={timeForce===tf} onChange={()=>setTimeForce(tf)} />
+              {['DAY', 'IOC'].map((tf) => (
+                <Form.Check
+                  key={tf}
+                  inline
+                  type="radio"
+                  name="timeForce"
+                  label={tf}
+                  checked={timeForce === tf}
+                  onChange={() => setTimeForce(tf)}
+                />
               ))}
-              <Form.Check inline type="checkbox" id="amo" label="AMO Order"
-                checked={amo} onChange={e=>setAmo(e.target.checked)} />
+              <Form.Check
+                inline
+                type="checkbox"
+                id="amo"
+                label="AMO Order"
+                checked={amo}
+                onChange={(e) => setAmo(e.target.checked)}
+              />
             </Col>
           </Row>
         </div>
 
-        {/* Buttons — bottom-left, nudged ~1/2" right */}
+        {/* Buttons */}
         <Row className="mt-2">
           <Col className="text-start">
             <div className="btn-nudge">
@@ -468,7 +661,7 @@ export default function TradeForm() {
                 {busy ? <Spinner size="sm" animation="border" className="me-2" /> : null}
                 {action.toUpperCase()}
               </Button>{' '}
-              <Button type="reset" variant="secondary" onClick={()=>window.location.reload()}>
+              <Button type="button" variant="secondary" onClick={resetForm}>
                 Reset
               </Button>
             </div>
@@ -476,22 +669,18 @@ export default function TradeForm() {
         </Row>
 
         {toast && (
-          <Alert variant={toast.variant} onClose={()=>setToast(null)} dismissible className="mt-3">
+          <Alert variant={toast.variant} onClose={() => setToast(null)} dismissible className="mt-3">
             {toast.text}
           </Alert>
         )}
       </Form>
 
-      {/* local styles: bluish skin, spacing, and button nudge */}
       <style jsx>{`
-        /* more left/right breathing room + extra bottom padding
-           so BUY/Reset sit fully inside the card */
         .cardPad { padding: 1rem 2.5rem 2.75rem; }
         @media (min-width: 992px) {
           .cardPad { padding: 1.25rem 2.75rem 3.25rem; }
         }
 
-        /* bluish card skin & soft glow (replaces green look) */
         .blueTone {
           background: linear-gradient(180deg, #f9fbff 0%, #f3f7ff 100%);
           border: 1px solid #d5e6ff;
@@ -499,7 +688,6 @@ export default function TradeForm() {
           border-radius: 8px;
         }
 
-        /* section spacing + inset dashed divider (bluish) */
         .formSection {
           padding-block: 6px;
           margin: 0 16px 8px;
@@ -513,16 +701,13 @@ export default function TradeForm() {
 
         .label-tight { margin-bottom: 4px; }
 
-        /* radios & checkboxes: clearer blue tick */
         :global(input[type="radio"]),
         :global(input[type="checkbox"]) {
-          accent-color: #0d6efd; /* Bootstrap primary, good contrast */
+          accent-color: #0d6efd;
         }
 
-        /* nudge buttons ~1/2" to the right + tiny bottom pad */
         .btn-nudge { margin-left: 3rem; padding-bottom: 0.25rem; }
 
-        /* tiny text tweak for per-client/group labels */
         .text-muted.small { font-size: 0.85rem; }
       `}</style>
     </Card>
