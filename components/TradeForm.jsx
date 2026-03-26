@@ -15,7 +15,7 @@ const toIntOr = (v, fallback = 1) => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
-const TRADE_FORM_STORAGE_KEY = 'woi-trade-form-v4';
+const TRADE_FORM_STORAGE_KEY = 'woi-trade-form-v5';
 
 const detectUserId = () => {
   if (typeof window === 'undefined') return '';
@@ -60,6 +60,7 @@ const extractBrokerResultSummary = (data) => {
     return { ok: false, message: 'Empty response from server.' };
   }
 
+  // direct broker response
   if (typeof data.status === 'string') {
     const ok = data.status.toUpperCase() === 'SUCCESS';
     return {
@@ -68,6 +69,7 @@ const extractBrokerResultSummary = (data) => {
     };
   }
 
+  // wrapper response with per-client responses
   if (data.responses && typeof data.responses === 'object') {
     const entries = Object.entries(data.responses);
     if (!entries.length) {
@@ -219,7 +221,7 @@ export default function TradeForm() {
     try {
       window.localStorage.setItem(TRADE_FORM_STORAGE_KEY, JSON.stringify(formState));
     } catch {
-      // ignore
+      // ignore storage errors
     }
   }, [
     action,
